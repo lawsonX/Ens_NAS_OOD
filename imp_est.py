@@ -23,6 +23,7 @@ class MaskConv2d(nn.Conv2d):
         if branches > 1:
             self.mask = torch.ones([branches, out_channels, in_channels, kernel_size, kernel_size]).cuda()
             self.weight_ = nn.Parameter(torch.stack([self.weight for _ in range(branches)],0)).cuda()
+            # 【2,1,3,32,32】 = [1,3,32,32] + [1,3,32,32]
             self.weight_.retain_grad()
         else:
             self.mask = torch.ones([out_channels, in_channels, kernel_size, kernel_size]).cuda()
@@ -36,6 +37,7 @@ class MaskConv2d(nn.Conv2d):
         score  = torch.sum(score, dim=tuple(range(1, len(score.shape))))
         score, i = torch.sort(score)
         num_pruning = int(score.numel() * pruning_rate)
+
         self.mask[idx][i[:num_pruning]] = 0
 
     def forward(self, x, idx=None):
@@ -55,14 +57,14 @@ class Net(nn.Module):
         self.conv3 = MaskConv2d(64, 128, 3, padding=1,branches=br)
         self.fc1 = nn.Linear(128 * 4 * 4, 512)
         self.fc2_1 = nn.Linear(512, 6)
-        self.fc2_2 = nn.Linear(512, 6)
+        self.fc2_2 = nn.Linear(512, 6) 
 
-    def compute_mask(self, idx_list=[0,1], pruning_rate=0.2): # TODO：pruning rate 以后改成ofa的channel分配机制
+    def compute_mask(self, idx_list=[0,1], pruning_rate_list=[0.1,0.5,0.2]): # TODO：pruning rate 以后改成ofa的channel分配机制 #该成per layer & per branch 0.1~2.0 step 0.1
         for i in idx_list:
             # TODO: 之后根据OFA,对block_list进行遍历
-            self.conv1.compute_mask(i) 
-            self.conv2.compute_mask(i)
-            self.conv3.compute_mask(i)
+            self.conv1.compute_mask(i,pruning_rate)
+            self.conv2.compute_mask(i,pruning_rate)
+            self.conv3.compute_mask(i,pruning_rate)
         
     def forward(self, x, idx_list=[0,1]):
         x1= self.conv1(x,idx_list[0])
@@ -113,12 +115,14 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.01)
 
-    losses , top1 = test(testloader,model,criterion,True)
+    losses , top1 = test(testloader, model, criterion, True)
     model.compute_mask()
-    # for i in range(2):
-    #     model.conv1.mask[i]
-    #     model.conv2.mask[i]
-    #     model.conv3.mask[i]
+    
+    for i in range(2):
+        model.conv1.mask[i]
+        model.conv2.mask[i]
+        model.conv3.mask[i]
+
     losses , top1 = test(testloader,model,criterion,True)
 
     # torch.save(model.state_dict(), 'checkpoint/demo/model.pth.tar')
