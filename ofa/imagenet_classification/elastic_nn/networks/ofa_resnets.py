@@ -1,13 +1,13 @@
 import random
 import torch.nn as nn
 
-from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicConvLayer, DynamicLinearLayer,DynamicMultiHeadLinearLayer
+from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicMaskLinearLayer,DynamicMaskResidualBlock, DynamicMaskConvLayer, DynamicConvLayer, DynamicLinearLayer,DynamicMultiHeadLinearLayer
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicResNetBottleneckBlock,DynamicResNetResidualBlock
 from ofa.utils.layers import IdentityLayer, ResidualBlock
 from ofa.imagenet_classification.networks import ResNets, ResNetEns
 from ofa.utils import make_divisible, val2list, MyNetwork
 
-__all__ = ['OFAResNets','OFAResNets18']
+__all__ = ['OFAResNets','OFAResNets18','MaskEnsembleResNets18']
 
 
 class OFAResNets(ResNets):
@@ -575,13 +575,13 @@ class OFAResNets18(ResNets):
 		for block in self.blocks:
 			block.re_organize_middle_weights_v2(expand_ratio_stage)
 
-class OFAMskedResNets18(ResNets):
+class MaskEnsembleResNets18(ResNets):
 	def __init__(self, n_classes=10, bn_param=(0.1, 1e-5), dropout_rate=0,
-	             depth_list=2, expand_ratio_list=1, width_mult_list=1.0,ens=1):
+	             depth_list=0, expand_ratio_list=1, width_mult_list=1.0,branches=2):
 		self.depth_list = val2list(depth_list)
 		self.expand_ratio_list = val2list(expand_ratio_list)
 		self.width_mult_list = val2list(width_mult_list)
-		self.ens = ens
+		self.branches = branches
 		# sort
 		self.depth_list.sort()
 		self.expand_ratio_list.sort()
@@ -605,12 +605,12 @@ class OFAMskedResNets18(ResNets):
 
 		# build input stem
 		input_stem = [
-			DynamicConvLayer(val2list(3), mid_input_channel, 3, stride=2, use_bn=True, act_func='relu'),
-			ResidualBlock(
-				DynamicConvLayer(mid_input_channel, mid_input_channel, 3, stride=1, use_bn=True, act_func='relu'),
-				IdentityLayer(mid_input_channel, mid_input_channel)
-			),
-			DynamicConvLayer(mid_input_channel, input_channel, 3, stride=1, use_bn=True, act_func='relu')
+			DynamicMaskConvLayer(val2list(3), input_channel, 3, stride=2, use_bn=True, act_func='relu',branches=self.branches),
+			# ResidualBlock(
+			# 	DynamicMaskConvLayer(mid_input_channel, mid_input_channel, 3, stride=1, use_bn=True, act_func='relu',branches=self.branches),
+			# 	IdentityLayer(mid_input_channel, mid_input_channel)
+			# ),
+			# DynamicConvLayer(mid_input_channel, input_channel, 3, stride=1, use_bn=True, act_func='relu',branches=self.branches)
 		]
 
 		# blocks
@@ -618,20 +618,19 @@ class OFAMskedResNets18(ResNets):
 		for d, width, s in zip(n_block_list, stage_width_list, stride_list):
 			for i in range(d):
 				stride = s if i == 0 else 1
-				residual_block = DynamicResNetResidualBlock(
+				residual_block = DynamicMaskResidualBlock(
 					input_channel, width, expand_ratio_list=self.expand_ratio_list,
 					kernel_size=3, stride=stride, act_func='relu', downsample_mode='conv',
+					branches= self.branches
 				)
 				blocks.append(residual_block)
 				input_channel = width
 		# classifier
-		if ens > 1 :
-			classifier = DynamicMultiHeadLinearLayer(input_channel, n_classes, ens,dropout_rate=dropout_rate)
-		else:
-			classifier = DynamicLinearLayer(input_channel, n_classes, dropout_rate=dropout_rate)
+
+		classifier = DynamicMaskLinearLayer(input_channel, n_classes, self.branches,dropout_rate=dropout_rate,branches=branches)
 		
 
-		super(OFAMskedResNets18, self).__init__(input_stem, blocks, classifier)
+		super(MaskEnsembleResNets18, self).__init__(input_stem, blocks, classifier)
 
 		# set bn param
 		self.set_bn_param(*bn_param)
@@ -646,23 +645,32 @@ class OFAMskedResNets18(ResNets):
 
 	@staticmethod
 	def name():
-		return 'OFAResNets18'
+		return 'MaskEnsembleResNets18'
 
-	def forward(self, x):
+	def compute_mask(self, idx_list=[0,1], pruning_rate=0.5):
+		for i in idx_list:
+			for layer in self.input_stem:
+				layer.compute_mask(i, pruning_rate)
+			for block in self.blocks:
+				block.compute_mask(i, pruning_rate=[0.5,0.5,0.5])
+			self.classifier.compute_mask(i, pruning_rate)
+
+
+	def forward(self, x, idx):
 		for layer in self.input_stem:
 			if self.input_stem_skipping > 0 \
 					and isinstance(layer, ResidualBlock) and isinstance(layer.shortcut, IdentityLayer):
 				pass
 			else:
-				x = layer(x)
-		# x = self.max_pooling(x)
+				x = layer(x, idx)
+
 		for stage_id, block_idx in enumerate(self.grouped_block_index):
 			depth_param = self.runtime_depth[stage_id]
 			active_idx = block_idx[:len(block_idx) - depth_param]
-			for idx in active_idx:
-				x = self.blocks[idx](x)
+			for i in active_idx:
+				x = self.blocks[i](x, idx)
 		x = self.global_avg_pool(x)
-		x = self.classifier(x)
+		x = self.classifier(x, idx)
 		return x
 
 	@property
@@ -869,13 +877,3 @@ class OFAMskedResNets18(ResNets):
 			ens.append(ResNets(input_stem, blocks, classifier))
 			ensemble_model = ResNetEns(ens)
 		return ensemble_model
-		
-
-	""" Width Related Methods """
-	def re_organize_middle_weights(self, expand_ratio_stage=0):
-		for block in self.blocks:
-			block.re_organize_middle_weights(expand_ratio_stage)
-	
-	def re_organize_middle_weights_v2(self, expand_ratio_stage=0):
-		for block in self.blocks:
-			block.re_organize_middle_weights_v2(expand_ratio_stage)

@@ -11,10 +11,10 @@ from ofa.utils.layers import MBConvLayer, ConvLayer, IdentityLayer, set_layer_fr
 from ofa.utils.layers import ResNetBottleneckBlock, LinearLayer, MultiHeadLinearLayer, ResNetResidualBlock
 from ofa.utils import MyModule, val2list, get_net_device, build_activation, make_divisible, SEModule, MyNetwork
 from .dynamic_op import DynamicMaskConv2d,DynamicSeparableConv2d, DynamicConv2d, DynamicBatchNorm2d, DynamicSE, DynamicGroupNorm
-from .dynamic_op import DynamicLinear
+from .dynamic_op import DynamicLinear,DynamicMaskLinear
 
 __all__ = [
-    'adjust_bn_according_to_idx', 'copy_bn',
+    'adjust_bn_according_to_idx', 'copy_bn','DynamicMaskResidualBlock','DynamicMaskConvLayer','DynamicMaskLinearLayer'
     'DynamicMBConvLayer', 'DynamicConvLayer', 'DynamicLinearLayer', 'DynamicResNetBottleneckBlock'
 ]
 
@@ -36,103 +36,6 @@ def copy_bn(target_bn, src_bn):
         target_bn.running_mean.data.copy_(src_bn.running_mean.data[:feature_dim])
         target_bn.running_var.data.copy_(src_bn.running_var.data[:feature_dim])
 
-
-class DynamicMaskConvLayer(MyModule):
-    '''
-    与DynamicConvLayer 区别： 1.调用的是 DynamicMaskConv2d; 2.有n个branches
-    warning: 类下其它方法对多branches适配未验证
-    '''
-    def __init__(self, in_channel_list, out_channel_list, kernel_size=3, stride=1, dilation=1,
-                 use_bn=True, act_func='relu6',branches=2):
-        super(DynamicMaskConvLayer, self).__init__()
-
-        self.in_channel_list = in_channel_list
-        self.out_channel_list = out_channel_list
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.dilation = dilation
-        self.use_bn = use_bn
-        self.act_func = act_func
-        self.branches = branches
-
-        self.conv = DynamicMaskConv2d(
-            max_in_channels=max(self.in_channel_list), max_out_channels=max(self.out_channel_list),
-            kernel_size=self.kernel_size, stride=self.stride, dilation=self.dilation, branches=branches
-        )
-        if self.use_bn:
-            self.bn = DynamicBatchNorm2d(max(self.out_channel_list))
-        self.act = build_activation(self.act_func)
-
-        self.active_out_channel = max(self.out_channel_list)
-
-    def forward(self, x, idx=None):
-        self.conv.active_out_channel = self.active_out_channel
-
-        x = self.conv(x,idx)
-        if self.use_bn:
-            x = self.bn(x)
-        x = self.act(x)
-        return x
-
-    @property
-    def module_str(self):
-        return 'DyConv(O%d, K%d, S%d)' % (self.active_out_channel, self.kernel_size, self.stride)
-
-    @property
-    def config(self):
-        return {
-            'name': DynamicMaskConvLayer.__name__,
-            'in_channel_list': self.in_channel_list,
-            'out_channel_list': self.out_channel_list,
-            'kernel_size': self.kernel_size,
-            'stride': self.stride,
-            'dilation': self.dilation,
-            'use_bn': self.use_bn,
-            'act_func': self.act_func,
-            'branches': self.branches
-        }
-
-    @staticmethod
-    def build_from_config(config):
-        return DynamicMaskConvLayer(**config)
-
-    ############################################################################################
-
-    @property
-    def in_channels(self):
-        return max(self.in_channel_list)
-
-    @property
-    def out_channels(self):
-        return max(self.out_channel_list)
-
-    ############################################################################################
-
-    def get_active_subnet(self, in_channel, preserve_weight=True):
-        sub_layer = set_layer_from_config(self.get_active_subnet_config(in_channel))
-        sub_layer = sub_layer.to(get_net_device(self))
-
-        if not preserve_weight:
-            return sub_layer
-
-        sub_layer.conv.weight.data.copy_(self.conv.get_active_filter(self.active_out_channel, in_channel).data)
-        if self.use_bn:
-            copy_bn(sub_layer.bn, self.bn.bn)
-
-        return sub_layer
-    
-    def get_active_subnet_config(self, in_channel):
-        return {
-            'name': ConvLayer.__name__,
-            'in_channels': in_channel,
-            'out_channels': self.active_out_channel,
-            'kernel_size': self.kernel_size,
-            'stride': self.stride,
-            'dilation': self.dilation,
-            'use_bn': self.use_bn,
-            'act_func': self.act_func,
-            'branches': self.branches,
-        }
 
 class DynamicLinearLayer(MyModule):
 
@@ -857,15 +760,11 @@ class DynamicResNetResidualBlock(MyModule):
             ('bn', DynamicBatchNorm2d(max_middle_channel)),
             ('act', build_activation(self.act_func, inplace=True)),
         ]))
-        a,b,c,d = self.conv1.shape
-        self.mask1 = torch.ones(self.ens, a, b, c, d)
 
         self.conv2 = nn.Sequential(OrderedDict([
             ('conv', DynamicConv2d(max_middle_channel, max(self.out_channel_list), kernel_size)),
             ('bn', DynamicBatchNorm2d(max(self.out_channel_list))),
         ]))
-        a,b,c,d = self.conv2.shape
-        self.mask2 = torch.ones(self.ens, a, b, c, d)
 
         if self.stride == 1 and self.in_channel_list == self.out_channel_list:
             self.downsample = IdentityLayer(max(self.in_channel_list), max(self.out_channel_list))
@@ -887,14 +786,6 @@ class DynamicResNetResidualBlock(MyModule):
 
         self.active_expand_ratio = max(self.expand_ratio_list)
         self.active_out_channel = max(self.out_channel_list)
-
-    def compute_importance(self,mask):
-        conv2_ori_weight = copy.deepcopy(self.conv2.conv.conv.weight.data)
-        conv2_ori_weight_grad = copy.deepcopy(self.conv2.conv.conv.weight.grad)
-        conv1_ori_weight = copy.deepcopy(self.conv1.conv.conv.weight.data)
-        for i in range(len(mask)):
-            importance = torch.sum(conv2_ori_weight * conv2_ori_weight_grad, dim=(0, 2, 3))
-            importance *= importance
 
 
     def forward(self, x):
@@ -1052,3 +943,185 @@ class DynamicResNetResidualBlock(MyModule):
         self.conv1.conv.conv.weight.data = torch.index_select(conv1_ori_weight, 0, sorted_idx)
 
         return None
+
+################################################
+class DynamicMaskConvLayer(MyModule):
+    '''
+    与DynamicConvLayer 区别： 1.调用的是 DynamicMaskConv2d; 2.有n个branches
+    warning: 类下其它方法对多branches适配未验证
+    '''
+    def __init__(self, in_channel_list, out_channel_list, kernel_size=3, stride=1, dilation=1,
+                 use_bn=True, act_func='relu6',branches=2):
+        super(DynamicMaskConvLayer, self).__init__()
+
+        self.in_channel_list = in_channel_list
+        self.out_channel_list = out_channel_list
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation = dilation
+        self.use_bn = use_bn
+        self.act_func = act_func
+        self.branches = branches
+
+        self.conv = DynamicMaskConv2d(
+            max_in_channels=max(self.in_channel_list), max_out_channels=max(self.out_channel_list),
+            kernel_size=self.kernel_size, stride=self.stride, dilation=self.dilation, branches=branches
+        )
+        if self.use_bn:
+            self.bn = DynamicBatchNorm2d(max(self.out_channel_list))
+        self.act = build_activation(self.act_func)
+
+        self.active_out_channel = max(self.out_channel_list)
+    
+    def compute_mask(self, idx,pruning_rate=0):
+        self.conv.compute_mask(idx, pruning_rate)
+
+    def forward(self, x, idx=0.2):
+        self.conv.active_out_channel = self.active_out_channel
+
+        x = self.conv(x,idx)
+        if self.use_bn:
+            x = self.bn(x)
+        x = self.act(x)
+        return x
+
+    @property
+    def module_str(self):
+        return 'DyConv(O%d, K%d, S%d)' % (self.active_out_channel, self.kernel_size, self.stride)
+
+    @property
+    def config(self):
+        return {
+            'name': DynamicMaskConvLayer.__name__,
+            'in_channel_list': self.in_channel_list,
+            'out_channel_list': self.out_channel_list,
+            'kernel_size': self.kernel_size,
+            'stride': self.stride,
+            'dilation': self.dilation,
+            'use_bn': self.use_bn,
+            'act_func': self.act_func,
+            'branches': self.branches
+        }
+
+    ############################################################################################
+
+    @property
+    def in_channels(self):
+        return max(self.in_channel_list)
+
+    @property
+    def out_channels(self):
+        return max(self.out_channel_list)
+
+
+class DynamicMaskResidualBlock(MyModule):
+
+    def __init__(self, ens, in_channel_list, out_channel_list, expand_ratio_list=1,
+                 kernel_size=3, stride=1, act_func='relu', downsample_mode='conv', branches=2):
+        super(DynamicMaskResidualBlock, self).__init__()
+
+        self.in_channel_list = in_channel_list
+        self.out_channel_list = out_channel_list
+        self.expand_ratio_list = val2list(expand_ratio_list)
+
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.act_func = act_func
+        self.downsample_mode = downsample_mode
+        self.ens = ens
+
+        
+
+        # build modules
+        max_middle_channel = make_divisible(
+            round(max(self.out_channel_list) * max(self.expand_ratio_list)), MyNetwork.CHANNEL_DIVISIBLE)
+
+        self.conv1 = DynamicMaskConv2d(
+            max_in_channels = max(self.in_channel_list),
+            max_out_channels = max_middle_channel,
+            kernel_size=kernel_size,
+            stride=stride,
+            branches=branches,
+            )
+        self.bn1 = DynamicBatchNorm2d(max_middle_channel)
+        self.act =  build_activation(self.act_func, inplace=True)
+
+
+        self.conv2 = DynamicMaskConv2d(
+            max_in_channels = max_middle_channel,
+            max_out_channels = max(self.out_channel_list),
+            kernel_size = kernel_size,
+            branches=branches,
+            )
+        self.bn2 = DynamicBatchNorm2d(max(self.out_channel_list))
+
+        if self.stride == 1 and self.in_channel_list == self.out_channel_list:
+            self.res = IdentityLayer(max(self.in_channel_list), max(self.out_channel_list))
+        elif self.downsample_mode == 'conv':
+            self.res = DynamicMaskConv2d(
+                max_in_channels = max(self.in_channel_list),
+                max_out_channels = max(self.out_channel_list),
+                stride=stride,
+                branches=branches,
+                )
+            self.bn_res = ('bn', DynamicBatchNorm2d(max(self.out_channel_list))),
+        else:
+            raise NotImplementedError
+
+        self.final_act = build_activation(self.act_func, inplace=True)
+
+        self.active_expand_ratio = max(self.expand_ratio_list)
+        self.active_out_channel = max(self.out_channel_list)
+
+
+    def compute_mask(self, idx, pruning_rate_list=[0.2,0.2,0.2]):
+        self.conv1.compute_mask(idx, pruning_rate_list[0])
+        self.conv2.compute_mask(idx, pruning_rate_list[1])  
+        self.res.compute_mask(idx, pruning_rate_list[2])
+
+    def forward(self, x, idx):
+        feature_dim = self.active_middle_channels
+
+        self.conv1.conv.active_out_channel = feature_dim
+        self.conv2.conv.active_out_channel = self.active_out_channel
+        if not isinstance(self.res, IdentityLayer):
+            self.res.conv.active_out_channel = self.active_out_channel
+
+        residual = self.res(x, idx)
+
+        x = self.conv1(x, idx)
+        x = self.bn1(x)
+        x = self.act(x)
+
+        x = self.conv2(x, idx)
+        x = self.bn2(x)
+
+        x = x + residual
+        x = self.final_act(x)
+        return x
+
+class DynamicMaskLinearLayer(MyModule):
+
+    def __init__(self, in_features_list, out_features, bias=True, dropout_rate=0,branches=2):
+        super(DynamicMaskLinearLayer, self).__init__()
+
+        self.in_features_list = in_features_list
+        self.out_features = out_features
+        self.bias = bias
+        self.dropout_rate = dropout_rate
+
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(self.dropout_rate, inplace=True)
+        else:
+            self.dropout = None
+        self.linear = DynamicMaskLinear(
+            max_in_features=max(self.in_features_list), max_out_features=self.out_features, bias=self.bias, branches=branches
+        )
+    
+    def compute_mask(self, idx, pruning_rate=0.5):
+        self.linear.compute_mask(idx, pruning_rate)
+
+    def forward(self, x, idx):
+        if self.dropout is not None:
+            x = self.dropout(x)
+        return self.linear(x, idx)

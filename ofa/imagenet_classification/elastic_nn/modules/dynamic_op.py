@@ -9,7 +9,7 @@ from torch.nn.parameter import Parameter
 
 from ofa.utils import get_same_padding, sub_filter_start_end, make_divisible, SEModule, MyNetwork, MyConv2d
 
-__all__ = ['DynamicSeparableConv2d', 'DynamicConv2d', 'DynamicGroupConv2d',
+__all__ = ['DynamicSeparableConv2d', 'DynamicConv2d', 'DynamicGroupConv2d','DynamicMaskLinear'
            'DynamicBatchNorm2d', 'DynamicGroupNorm', 'DynamicSE', 'DynamicLinear','DynamicMaskConv2d']
 
 class DynamicSeparableConv2d(nn.Module):
@@ -359,4 +359,44 @@ class DynamicMaskConv2d(nn.Module):
 		padding = get_same_padding(self.kernel_size)
 		y = F.conv2d(x, weight, None, self.stride, padding, self.dilation, 1)
 
+		return y
+
+class DynamicMaskLinear(nn.Module):
+
+	def __init__(self, max_in_features, max_out_features, bias=True, branches=2):
+		super(DynamicMaskLinear, self).__init__()
+
+		self.max_in_features = max_in_features
+		self.max_out_features = max_out_features
+		self.bias = bias
+
+		self.linear = nn.Linear(self.max_in_features, self.max_out_features, self.bias)
+
+		self.active_out_features = self.max_out_features
+
+		if branches > 1:
+			self.mask = torch.ones([branches, self.max_out_channels, self.max_in_channels])#.cuda()
+			self.weight_ = nn.Parameter(torch.stack([self.linear.weight for _ in range(branches)],0))#.cuda()
+			self.weight_.retain_grad()
+		else:
+			self.mask = torch.ones([self.max_out_channels,  self.max_in_channels])#.cuda()
+
+	def get_grad(self,idx):
+		self.grad = self.weight_.grad[idx]
+		return self.grad
+    
+	def compute_mask(self, idx, pruning_rate=0.2): # TODO 设计代替pruning_rate的机制
+		score = self.weight_[idx] * self.weight_.grad[idx]
+		score  = torch.sum(score, dim=tuple(range(1, len(score.shape))))
+		score, i = torch.sort(score)
+		num_pruning = int(score.numel() * pruning_rate)
+		self.mask[idx][i[:num_pruning]] = 0
+
+	def forward(self, x, idx=None):
+		if idx is not None:
+			weight = self.weight_[idx] * self.mask[idx]
+		else:
+			weight = self.linear.weight * self.mask
+
+		y = F.linear(x, weight)
 		return y

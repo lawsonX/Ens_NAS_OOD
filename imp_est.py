@@ -9,7 +9,7 @@ from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig
 import torch.utils.data as data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-
+from collections import OrderedDict
 import torch
 import torch.nn as nn
 
@@ -23,7 +23,7 @@ class MaskConv2d(nn.Conv2d):
         if branches > 1:
             self.mask = torch.ones([branches, out_channels, in_channels, kernel_size, kernel_size]).cuda()
             self.weight_ = nn.Parameter(torch.stack([self.weight for _ in range(branches)],0)).cuda()
-            # 【2,1,3,32,32】 = [1,3,32,32] + [1,3,32,32]
+            # [2,1,3,32,32] = [1,3,32,32] + [1,3,32,32]
             self.weight_.retain_grad()
         else:
             self.mask = torch.ones([out_channels, in_channels, kernel_size, kernel_size]).cuda()
@@ -59,16 +59,18 @@ class Net(nn.Module):
         self.fc2_1 = nn.Linear(512, 6)
         self.fc2_2 = nn.Linear(512, 6) 
 
-    def compute_mask(self, idx_list=[0,1], pruning_rate_list=[0.1,0.5,0.2]): # TODO：pruning rate 以后改成ofa的channel分配机制 #该成per layer & per branch 0.1~2.0 step 0.1
+    def compute_mask(self, idx_list=[0,1], pruning_rate_list=[0.1,0.5,0.2]): 
+        # TODO：pruning rate 以后改成ofa的channel分配机制 #该成per layer & per branch 0.1~2.0 step 0.1
         for i in idx_list:
             # TODO: 之后根据OFA,对block_list进行遍历
-            self.conv1.compute_mask(i,pruning_rate)
-            self.conv2.compute_mask(i,pruning_rate)
-            self.conv3.compute_mask(i,pruning_rate)
+            self.conv1.compute_mask(i,0.5)
+            self.conv2.compute_mask(i,0.5)
+            self.conv3.compute_mask(i,0.5)
         
     def forward(self, x, idx_list=[0,1]):
         x1= self.conv1(x,idx_list[0])
         x1 = nn.functional.relu(x1)
+        x1 = nn.functional.batch_norm()
         x1 = self.pool(x1)
         x1 = self.conv2(x1,idx_list[0])
         x1 = nn.functional.relu(x1)

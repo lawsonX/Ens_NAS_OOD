@@ -11,7 +11,7 @@ import torch
 
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_op import \
     DynamicSeparableConv2d
-from ofa.imagenet_classification.elastic_nn.networks import (OFAMobileNetV3,
+from ofa.imagenet_classification.elastic_nn.networks import (MaskEnsembleResNets18,
                                                              OFAResNets,OFAResNets18)
 from ofa.imagenet_classification.elastic_nn.training.progressive_shrinking import \
     load_models

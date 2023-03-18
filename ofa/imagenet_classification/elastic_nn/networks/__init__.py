@@ -4,4 +4,4 @@
 
 from .ofa_proxyless import OFAProxylessNASNets
 from .ofa_mbv3 import OFAMobileNetV3
-from .ofa_resnets import OFAResNets,OFAResNets18
+from .ofa_resnets import OFAResNets,OFAResNets18,MaskEnsembleResNets18
