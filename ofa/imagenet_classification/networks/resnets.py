@@ -82,18 +82,18 @@ class ResNets(MyNetwork):
 			if isinstance(m, ResNetBottleneckBlock) and isinstance(m.downsample, IdentityLayer):
 				m.conv3.bn.weight.data.zero_()
 
-	@property
-	def grouped_block_index(self):
-		info_list = []
-		block_index_list = []
-		for i, block in enumerate(self.blocks):
-			if not isinstance(block.downsample, IdentityLayer) and len(block_index_list) > 0:
-				info_list.append(block_index_list)
-				block_index_list = []
-			block_index_list.append(i)
-		if len(block_index_list) > 0:
-			info_list.append(block_index_list)
-		return info_list
+	# @property
+	# def grouped_block_index(self):
+	# 	info_list = []
+	# 	block_index_list = []
+	# 	for i, block in enumerate(self.blocks):
+	# 		if not isinstance(block.downsample, IdentityLayer) and len(block_index_list) > 0:
+	# 			info_list.append(block_index_list)
+	# 			block_index_list = []
+	# 		block_index_list.append(i)
+	# 	if len(block_index_list) > 0:
+	# 		info_list.append(block_index_list)
+	# 	return info_list
 	
 	def load_state_dict(self, state_dict, **kwargs):
 		super(ResNets, self).load_state_dict(state_dict)

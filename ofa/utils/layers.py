@@ -219,6 +219,9 @@ class IdentityLayer(My2DLayer):
 	             use_bn=False, act_func=None, dropout_rate=0, ops_order='weight_bn_act'):
 		super(IdentityLayer, self).__init__(in_channels, out_channels, use_bn, act_func, dropout_rate, ops_order)
 
+	def compute_mask(self, idx, pruning_rate):
+		pass
+
 	def weight_op(self):
 		return None
 

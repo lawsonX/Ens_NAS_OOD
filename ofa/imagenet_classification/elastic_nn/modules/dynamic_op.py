@@ -9,8 +9,10 @@ from torch.nn.parameter import Parameter
 
 from ofa.utils import get_same_padding, sub_filter_start_end, make_divisible, SEModule, MyNetwork, MyConv2d
 
-__all__ = ['DynamicSeparableConv2d', 'DynamicConv2d', 'DynamicGroupConv2d','DynamicMaskLinear'
-           'DynamicBatchNorm2d', 'DynamicGroupNorm', 'DynamicSE', 'DynamicLinear','DynamicMaskConv2d']
+__all__ = ['DynamicSeparableConv2d', 'DynamicConv2d', 'DynamicGroupConv2d',
+           'DynamicBatchNorm2d', 'DynamicGroupNorm', 'DynamicSE', 'DynamicLinear',
+		   'DynamicMaskConv2d','DynamicMaskLinear'
+		   ]
 
 class DynamicSeparableConv2d(nn.Module):
 	KERNEL_TRANSFORM_MODE = 1  # None or 1
@@ -333,11 +335,11 @@ class DynamicMaskConv2d(nn.Module):
 		self.active_out_channel = self.max_out_channels
 
 		if branches > 1:
-			self.mask = torch.ones([branches, self.max_out_channels, self.max_in_channels, kernel_size, kernel_size])#.cuda()
-			self.weight_ = nn.Parameter(torch.stack([self.conv.weight for _ in range(branches)],0))#.cuda()
+			self.mask = torch.ones([branches, self.max_out_channels, self.max_in_channels, kernel_size, kernel_size]).cuda()
+			self.weight_ = nn.Parameter(torch.stack([self.conv.weight for _ in range(branches)],0)).cuda()
 			self.weight_.retain_grad()
 		else:
-			self.mask = torch.ones([self.max_out_channels,  self.max_in_channels, kernel_size, kernel_size])#.cuda()
+			self.mask = torch.ones([self.max_out_channels,  self.max_in_channels, kernel_size, kernel_size]).cuda()
 	
 	def get_grad(self,idx):
 		self.grad = self.weight_.grad[idx]
@@ -375,11 +377,11 @@ class DynamicMaskLinear(nn.Module):
 		self.active_out_features = self.max_out_features
 
 		if branches > 1:
-			self.mask = torch.ones([branches, self.max_out_channels, self.max_in_channels])#.cuda()
-			self.weight_ = nn.Parameter(torch.stack([self.linear.weight for _ in range(branches)],0))#.cuda()
+			self.mask = torch.ones([branches, self.max_out_features, self.max_in_features]).cuda()
+			self.weight_ = nn.Parameter(torch.stack([self.linear.weight for _ in range(branches)],0)).cuda()
 			self.weight_.retain_grad()
 		else:
-			self.mask = torch.ones([self.max_out_channels,  self.max_in_channels])#.cuda()
+			self.mask = torch.ones([self.max_out_features,  self.max_in_features]).cuda()
 
 	def get_grad(self,idx):
 		self.grad = self.weight_.grad[idx]

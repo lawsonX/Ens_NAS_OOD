@@ -14,8 +14,9 @@ from .dynamic_op import DynamicMaskConv2d,DynamicSeparableConv2d, DynamicConv2d,
 from .dynamic_op import DynamicLinear,DynamicMaskLinear
 
 __all__ = [
-    'adjust_bn_according_to_idx', 'copy_bn','DynamicMaskResidualBlock','DynamicMaskConvLayer','DynamicMaskLinearLayer'
-    'DynamicMBConvLayer', 'DynamicConvLayer', 'DynamicLinearLayer', 'DynamicResNetBottleneckBlock'
+    'adjust_bn_according_to_idx', 'copy_bn',
+    'DynamicMBConvLayer', 'DynamicConvLayer', 'DynamicLinearLayer', 'DynamicResNetBottleneckBlock',
+    'DynamicMaskResidualBlock','DynamicMaskConvLayer','DynamicMaskLinearLayer',
 ]
 
 
@@ -1016,7 +1017,7 @@ class DynamicMaskConvLayer(MyModule):
 
 class DynamicMaskResidualBlock(MyModule):
 
-    def __init__(self, ens, in_channel_list, out_channel_list, expand_ratio_list=1,
+    def __init__(self, in_channel_list, out_channel_list, expand_ratio_list=1,
                  kernel_size=3, stride=1, act_func='relu', downsample_mode='conv', branches=2):
         super(DynamicMaskResidualBlock, self).__init__()
 
@@ -1028,7 +1029,6 @@ class DynamicMaskResidualBlock(MyModule):
         self.stride = stride
         self.act_func = act_func
         self.downsample_mode = downsample_mode
-        self.ens = ens
 
         
 
@@ -1073,6 +1073,11 @@ class DynamicMaskResidualBlock(MyModule):
         self.active_expand_ratio = max(self.expand_ratio_list)
         self.active_out_channel = max(self.out_channel_list)
 
+    @property
+    def active_middle_channels(self):
+        feature_dim = round(self.active_out_channel * self.active_expand_ratio)
+        feature_dim = make_divisible(feature_dim, MyNetwork.CHANNEL_DIVISIBLE)
+        return feature_dim
 
     def compute_mask(self, idx, pruning_rate_list=[0.2,0.2,0.2]):
         self.conv1.compute_mask(idx, pruning_rate_list[0])
@@ -1086,8 +1091,9 @@ class DynamicMaskResidualBlock(MyModule):
         self.conv2.conv.active_out_channel = self.active_out_channel
         if not isinstance(self.res, IdentityLayer):
             self.res.conv.active_out_channel = self.active_out_channel
-
-        residual = self.res(x, idx)
+            residual = self.res(x, idx)
+        else:
+            residual = self.res(x)
 
         x = self.conv1(x, idx)
         x = self.bn1(x)

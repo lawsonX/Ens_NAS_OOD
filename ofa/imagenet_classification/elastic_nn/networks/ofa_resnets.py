@@ -1,4 +1,5 @@
 import random
+import torch
 import torch.nn as nn
 
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicMaskLinearLayer,DynamicMaskResidualBlock, DynamicMaskConvLayer, DynamicConvLayer, DynamicLinearLayer,DynamicMultiHeadLinearLayer
@@ -619,16 +620,14 @@ class MaskEnsembleResNets18(ResNets):
 			for i in range(d):
 				stride = s if i == 0 else 1
 				residual_block = DynamicMaskResidualBlock(
-					input_channel, width, expand_ratio_list=self.expand_ratio_list,
+					in_channel_list = input_channel, out_channel_list = width, expand_ratio_list=self.expand_ratio_list,
 					kernel_size=3, stride=stride, act_func='relu', downsample_mode='conv',
 					branches= self.branches
 				)
 				blocks.append(residual_block)
 				input_channel = width
 		# classifier
-
 		classifier = DynamicMaskLinearLayer(input_channel, n_classes, self.branches,dropout_rate=dropout_rate,branches=branches)
-		
 
 		super(MaskEnsembleResNets18, self).__init__(input_stem, blocks, classifier)
 
@@ -652,228 +651,41 @@ class MaskEnsembleResNets18(ResNets):
 			for layer in self.input_stem:
 				layer.compute_mask(i, pruning_rate)
 			for block in self.blocks:
-				block.compute_mask(i, pruning_rate=[0.5,0.5,0.5])
+				block.compute_mask(i, [0.5,0.5,0.5])
 			self.classifier.compute_mask(i, pruning_rate)
 
 
-	def forward(self, x, idx):
-		for layer in self.input_stem:
-			if self.input_stem_skipping > 0 \
-					and isinstance(layer, ResidualBlock) and isinstance(layer.shortcut, IdentityLayer):
-				pass
-			else:
-				x = layer(x, idx)
+	# @property
+	def grouped_block_index(self):
+		info_list = []
+		block_index_list = []
+		for i, block in enumerate(self.blocks):
+			if not isinstance(block.res, IdentityLayer) and len(block_index_list) > 0:
+				info_list.append(block_index_list)
+				block_index_list = []
+			block_index_list.append(i)
+		if len(block_index_list) > 0:
+			info_list.append(block_index_list)
+		return info_list
 
-		for stage_id, block_idx in enumerate(self.grouped_block_index):
-			depth_param = self.runtime_depth[stage_id]
-			active_idx = block_idx[:len(block_idx) - depth_param]
-			for i in active_idx:
-				x = self.blocks[i](x, idx)
-		x = self.global_avg_pool(x)
-		x = self.classifier(x, idx)
-		return x
-
-	@property
-	def module_str(self):
-		_str = ''
-		for layer in self.input_stem:
-			if self.input_stem_skipping > 0 \
-					and isinstance(layer, ResidualBlock) and isinstance(layer.shortcut, IdentityLayer):
-				pass
-			else:
-				_str += layer.module_str + '\n'
-		# _str += 'max_pooling(ks=3, stride=2)\n'
-		for stage_id, block_idx in enumerate(self.grouped_block_index):
-			depth_param = self.runtime_depth[stage_id]
-			active_idx = block_idx[:len(block_idx) - depth_param]
-			for idx in active_idx:
-				_str += self.blocks[idx].module_str + '\n'
-		_str += self.global_avg_pool.__repr__() + '\n'
-		_str += self.classifier.module_str
-		return _str
-
-	@property
-	def config(self):
-		return {
-			'name': OFAResNets18.__name__,
-			'bn': self.get_bn_param(),
-			'input_stem': [
-				layer.config for layer in self.input_stem
-			],
-			'blocks': [
-				block.config for block in self.blocks
-			],
-			'classifier': self.classifier.config,
-		}
-
-	@staticmethod
-	def build_from_config(config):
-		raise ValueError('do not support this function')
-
-	def load_state_dict(self, state_dict, **kwargs):
-		model_dict = self.state_dict()
-		for key in state_dict:
-			new_key = key
-			if new_key in model_dict:
-				pass
-			elif '.linear.' in new_key:
-				new_key = new_key.replace('.linear.', '.linear.linear.')
-			elif 'bn.' in new_key:
-				new_key = new_key.replace('bn.', 'bn.bn.')
-			elif 'conv.weight' in new_key:
-				new_key = new_key.replace('conv.weight', 'conv.conv.weight')
-			else:
-				raise ValueError(new_key)
-			assert new_key in model_dict, '%s' % new_key
-			model_dict[new_key] = state_dict[key]
-		super(OFAResNets18, self).load_state_dict(model_dict)
-
-	""" set, sample and get active sub-networks """
-
-	def set_max_net(self):
-		self.set_active_subnet(d=max(self.depth_list), e=max(self.expand_ratio_list), w=len(self.width_mult_list) - 1)
-
-	def set_active_subnet(self, d=None, e=None, w=None, **kwargs):
-		depth = val2list(d, len(ResNets.BASE_DEPTH_LIST) + 1)
-		expand_ratio = val2list(e, len(self.blocks))
-		width_mult = val2list(w, len(ResNets.BASE_DEPTH_LIST) + 2)
-
-		for block, e in zip(self.blocks, expand_ratio):
-			if e is not None:
-				block.active_expand_ratio = e
-
-		if width_mult[0] is not None:
-			self.input_stem[1].conv.active_out_channel = self.input_stem[0].active_out_channel = \
-				self.input_stem[0].out_channel_list[width_mult[0]]
-		if width_mult[1] is not None:
-			self.input_stem[2].active_out_channel = self.input_stem[2].out_channel_list[width_mult[1]]
-
-		if depth[0] is not None:
-			self.input_stem_skipping = (depth[0] != max(self.depth_list))
-		for stage_id, (block_idx, d, w) in enumerate(zip(self.grouped_block_index, depth[1:], width_mult[2:])):
-			if d is not None:
-				self.runtime_depth[stage_id] = max(self.depth_list) - d
-			if w is not None:
-				for idx in block_idx:
-					self.blocks[idx].active_out_channel = self.blocks[idx].out_channel_list[w]
-
-	def sample_active_subnet(self):
-		# sample expand ratio
-		expand_setting = []
-		for block in self.blocks:
-			expand_setting.append(random.choice(block.expand_ratio_list))
-		
-		# sample depth
-		depth_setting = [random.choice([max(self.depth_list), min(self.depth_list)])]
-		for stage_id in range(len(ResNets.BASE_DEPTH_LIST)):
-			depth_setting.append(random.choice(self.depth_list))
-
-		# sample width_mult
-		width_mult_setting = [
-			random.choice(list(range(len(self.input_stem[0].out_channel_list)))),
-			random.choice(list(range(len(self.input_stem[2].out_channel_list)))),
-		]
-		for stage_id, block_idx in enumerate(self.grouped_block_index):
-			stage_first_block = self.blocks[block_idx[0]]
-			width_mult_setting.append(
-				random.choice(list(range(len(stage_first_block.out_channel_list))))
-			)
-
-		arch_config = {
-			# 'ks': [3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
-			# 'image_size': 32,
-			'd': depth_setting,
-			'e': expand_setting,
-			'w': width_mult_setting,
-			'acc': None
-		}
-		self.set_active_subnet(**arch_config)
-		return arch_config
-
-	def get_active_subnet(self, preserve_weight=True):
-		input_stem = [self.input_stem[0].get_active_subnet(3, preserve_weight)]
-		if self.input_stem_skipping <= 0:
-			input_stem.append(ResidualBlock(
-				self.input_stem[1].conv.get_active_subnet(self.input_stem[0].active_out_channel, preserve_weight),
-				IdentityLayer(self.input_stem[0].active_out_channel, self.input_stem[0].active_out_channel)
-			))
-		input_stem.append(self.input_stem[2].get_active_subnet(self.input_stem[0].active_out_channel, preserve_weight))
-		input_channel = self.input_stem[2].active_out_channel
-
-		blocks = []
-		for stage_id, block_idx in enumerate(self.grouped_block_index):
-			depth_param = self.runtime_depth[stage_id]
-			active_idx = block_idx[:len(block_idx) - depth_param]
-			for idx in active_idx:
-				blocks.append(self.blocks[idx].get_active_subnet(input_channel, preserve_weight))
-				input_channel = self.blocks[idx].active_out_channel
-		classifier = self.classifier.get_active_subnet(input_channel, preserve_weight)
-		subnet = ResNets(input_stem, blocks, classifier)
-
-		subnet.set_bn_param(**self.get_bn_param())
-		return subnet
-
-	def get_active_net_config(self):
-		input_stem_config = [self.input_stem[0].get_active_subnet_config(3)]
-		if self.input_stem_skipping <= 0:
-			input_stem_config.append({
-				'name': ResidualBlock.__name__,
-				'conv': self.input_stem[1].conv.get_active_subnet_config(self.input_stem[0].active_out_channel),
-				'shortcut': IdentityLayer(self.input_stem[0].active_out_channel, self.input_stem[0].active_out_channel),
-			})
-		input_stem_config.append(self.input_stem[2].get_active_subnet_config(self.input_stem[0].active_out_channel))
-		input_channel = self.input_stem[2].active_out_channel
-
-		blocks_config = []
-		for stage_id, block_idx in enumerate(self.grouped_block_index):
-			depth_param = self.runtime_depth[stage_id]
-			active_idx = block_idx[:len(block_idx) - depth_param]
-			for idx in active_idx:
-				blocks_config.append(self.blocks[idx].get_active_subnet_config(input_channel))
-				input_channel = self.blocks[idx].active_out_channel
-		classifier_config = self.classifier.get_active_subnet_config(input_channel)
-		return {
-			'name': ResNets.__name__,
-			'bn': self.get_bn_param(),
-			'input_stem': input_stem_config,
-			'blocks': blocks_config,
-			'classifier': classifier_config,
-		}
-
-	def get_active_ensembles(self,arch_list,preserve_weight=True):
-		"""
-		arch_list format : {'d':[len=5], 'e':[len=12], 'w':None}
-		"""
-		ens = nn.ModuleList()
-		for i in range(len(arch_list)):
-			self.set_active_subnet(d=arch_list[i]['d'],e=arch_list[i]['e'],w=[0,0,0,0,0,0])
-
-			# Channel selection based on importance
-			expand_stage_list = self.expand_ratio_list.copy()
-			expand_stage_list.sort(reverse=True)
-			n_stages = len(expand_stage_list) - 1
-			current_stage = n_stages - 1
-			self.re_organize_middle_weights(expand_ratio_stage=current_stage)
-			#
-
-			input_stem = [self.input_stem[0].get_active_subnet(3, preserve_weight)]
-			if self.input_stem_skipping <= 0:
-				input_stem.append(ResidualBlock(
-					self.input_stem[1].conv.get_active_subnet(self.input_stem[0].active_out_channel, preserve_weight),
-					IdentityLayer(self.input_stem[0].active_out_channel, self.input_stem[0].active_out_channel)
-				))
-			input_stem.append(self.input_stem[2].get_active_subnet(self.input_stem[0].active_out_channel, preserve_weight))
-			input_channel = self.input_stem[2].active_out_channel
-
-			blocks = []
-			for stage_id, block_idx in enumerate(self.grouped_block_index):
+	def forward(self, x, idx_list=[0,1]):
+		output_list = []
+		for idx in idx_list:
+			for layer in self.input_stem:
+				if self.input_stem_skipping > 0 \
+						and isinstance(layer, ResidualBlock) and isinstance(layer.shortcut, IdentityLayer):
+					pass
+				else:
+					out = layer(x, idx)
+			# import pdb; pdb.set_trace()
+			info = self.grouped_block_index()
+			for stage_id, block_idx in enumerate(info):
 				depth_param = self.runtime_depth[stage_id]
 				active_idx = block_idx[:len(block_idx) - depth_param]
-				for idx in active_idx:
-					blocks.append(self.blocks[idx].get_active_subnet(input_channel, preserve_weight))
-					input_channel = self.blocks[idx].active_out_channel
-	
-			classifier = self.classifier.get_active_branches(i, input_channel, preserve_weight)
-			ens.append(ResNets(input_stem, blocks, classifier))
-			ensemble_model = ResNetEns(ens)
-		return ensemble_model
+				for i in active_idx:
+					out = self.blocks[i](out, idx)
+			out = self.global_avg_pool(out)
+			out = self.classifier(out, idx)
+			output_list.append(out)
+		output = torch.cat(tuple(out[:,:-1] for out in output_list),1)
+		return output, output_list
