@@ -607,11 +607,6 @@ class MaskEnsembleResNets18(ResNets):
 		# build input stem
 		input_stem = [
 			DynamicMaskConvLayer(val2list(3), input_channel, 3, stride=2, use_bn=True, act_func='relu',branches=self.branches),
-			# ResidualBlock(
-			# 	DynamicMaskConvLayer(mid_input_channel, mid_input_channel, 3, stride=1, use_bn=True, act_func='relu',branches=self.branches),
-			# 	IdentityLayer(mid_input_channel, mid_input_channel)
-			# ),
-			# DynamicConvLayer(mid_input_channel, input_channel, 3, stride=1, use_bn=True, act_func='relu',branches=self.branches)
 		]
 
 		# blocks
@@ -646,13 +641,13 @@ class MaskEnsembleResNets18(ResNets):
 	def name():
 		return 'MaskEnsembleResNets18'
 
-	def compute_mask(self, idx_list=[0,1], pruning_rate=0.5):
-		for i in idx_list:
+	def compute_mask(self, pruning_rate=0.1):
+		for i in range(self.branches):
 			for layer in self.input_stem:
 				layer.compute_mask(i, pruning_rate)
 			for block in self.blocks:
-				block.compute_mask(i, [0.5,0.5,0.5])
-			self.classifier.compute_mask(i, pruning_rate)
+				block.compute_mask(i, [pruning_rate,pruning_rate,pruning_rate])
+			# self.classifier.compute_mask(i, pruning_rate)
 
 
 	# @property

@@ -167,21 +167,12 @@ def main():
         classes = 6
     elif args.ens == 10:
         classes = 2
-    # ofa_network = OFAResNets18(
-    #     n_classes=classes, #run_config.data_provider.n_classes
-    #     bn_param=(args.bn_momentum, args.bn_eps),
-    #     dropout_rate=args.dropout,
-    #     depth_list=args.depth_list,
-    #     expand_ratio_list=args.expand_list,
-    #     width_mult_list=args.width_mult_list,
-    #     outputs=args.ens
-    # ).cuda()
     ofa_network = MaskEnsembleResNets18(
         n_classes=6, #run_config.data_provider.n_classes
         bn_param=(args.bn_momentum, args.bn_eps),
         dropout_rate=args.dropout,
         depth_list=[0],
-        expand_ratio_list=[0.5,1.0],
+        expand_ratio_list=[0.5, 0.75, 1.0],
         width_mult_list=[2.0],
         branches=2
     ).cuda()
@@ -190,32 +181,11 @@ def main():
     # ckpt = torch.load(args.pretrained)['state_dict']
     # ofa_network.load_state_dict(ckpt)
     # print("Pretrained OFA-Resnet on cifar10 is loaded")
+    ofa_network.compute_mask(pruning_rate=0.1)
     _ , test_acc = test(testloader, ofa_network, criterion, 1, True)
-    import pdb; pdb.set_trace()
-    
-
-    # random sample a sub-network
-    # ofa_network.sample_active_subnet()
-    # model = ofa_network.get_active_subnet(preserve_weight=True)
-
-    # manually assign config of a sub-network
-    # net_config = {'e': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 'd': [0, 0, 0, 0, 0], 'w': [0, 0, 0, 0, 0, 0]}
-    # for i in range(len(net_config['e'])) :
-    #     net_config['e'][i] = args.branch_expand_list[i]
-    # for i in range(len(net_config['d'])) :
-    #     net_config['d'][i] = args.branch_depth_list[i]
-    # assert 'd' in net_config and 'e' in net_config
-    # ofa_network.set_active_subnet(d=net_config['d'], e=net_config['e'], w=net_config['w'])
-    # model = ofa_network.get_active_subnet(preserve_weight=True)
-
-    # build sub-ensemble model by Configlist
-    arch_list = load()
-    ensemble_model = ofa_network.get_active_ensembles(arch_list,preserve_weight=True)
-    model = ensemble_model.cuda()
-    _ , test_acc = test(testloader, model, criterion, 1, True)
 
 
-    model = torch.nn.DataParallel(model).cuda()
+    model = torch.nn.DataParallel(ofa_network).cuda()
     cudnn.benchmark = True
     print('    Total params: %.2fM' % (sum(p.numel() for p in model.parameters())/1000000.0))
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)

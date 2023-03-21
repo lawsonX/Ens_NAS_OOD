@@ -336,17 +336,17 @@ class DynamicMaskConv2d(nn.Module):
 
 		if branches > 1:
 			self.mask = torch.ones([branches, self.max_out_channels, self.max_in_channels, kernel_size, kernel_size]).cuda()
-			self.weight_ = nn.Parameter(torch.stack([self.conv.weight for _ in range(branches)],0)).cuda()
-			self.weight_.retain_grad()
+			self.weight = nn.Parameter(torch.stack([self.conv.weight.data for _ in range(branches)],0)).cuda()
+			self.weight.retain_grad()
 		else:
 			self.mask = torch.ones([self.max_out_channels,  self.max_in_channels, kernel_size, kernel_size]).cuda()
 	
 	def get_grad(self,idx):
-		self.grad = self.weight_.grad[idx]
+		self.grad = self.weight.grad[idx]
 		return self.grad
     
-	def compute_mask(self, idx, pruning_rate=0.2): # TODO 设计代替pruning_rate的机制
-		score = self.weight_[idx] * self.weight_.grad[idx]
+	def compute_mask(self, idx, pruning_rate): # TODO 设计代替pruning_rate的机制
+		score = self.weight[idx] * self.weight.grad[idx]
 		score  = torch.sum(score, dim=tuple(range(1, len(score.shape))))
 		score, i = torch.sort(score)
 		num_pruning = int(score.numel() * pruning_rate)
@@ -354,7 +354,7 @@ class DynamicMaskConv2d(nn.Module):
 
 	def forward(self, x, idx=None):
 		if idx is not None:
-			weight = self.weight_[idx] * self.mask[idx]
+			weight = self.weight[idx] * self.mask[idx]
 		else:
 			weight = self.conv.weight * self.mask
 
@@ -378,8 +378,8 @@ class DynamicMaskLinear(nn.Module):
 
 		if branches > 1:
 			self.mask = torch.ones([branches, self.max_out_features, self.max_in_features]).cuda()
-			self.weight_ = nn.Parameter(torch.stack([self.linear.weight for _ in range(branches)],0)).cuda()
-			self.weight_.retain_grad()
+			self.weight = nn.Parameter(torch.stack([self.linear.weight.data for _ in range(branches)],0)).cuda()
+			self.weight.retain_grad()
 		else:
 			self.mask = torch.ones([self.max_out_features,  self.max_in_features]).cuda()
 
@@ -387,8 +387,8 @@ class DynamicMaskLinear(nn.Module):
 		self.grad = self.weight_.grad[idx]
 		return self.grad
     
-	def compute_mask(self, idx, pruning_rate=0.2): # TODO 设计代替pruning_rate的机制
-		score = self.weight_[idx] * self.weight_.grad[idx]
+	def compute_mask(self, idx, pruning_rate): # TODO 设计代替pruning_rate的机制
+		score = self.weight[idx] * self.weight.grad[idx]
 		score  = torch.sum(score, dim=tuple(range(1, len(score.shape))))
 		score, i = torch.sort(score)
 		num_pruning = int(score.numel() * pruning_rate)
@@ -396,7 +396,7 @@ class DynamicMaskLinear(nn.Module):
 
 	def forward(self, x, idx=None):
 		if idx is not None:
-			weight = self.weight_[idx] * self.mask[idx]
+			weight = self.weight[idx] * self.mask[idx]
 		else:
 			weight = self.linear.weight * self.mask
 

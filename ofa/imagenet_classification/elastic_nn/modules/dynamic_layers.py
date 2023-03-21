@@ -974,7 +974,7 @@ class DynamicMaskConvLayer(MyModule):
 
         self.active_out_channel = max(self.out_channel_list)
     
-    def compute_mask(self, idx,pruning_rate=0):
+    def compute_mask(self, idx, pruning_rate):
         self.conv.compute_mask(idx, pruning_rate)
 
     def forward(self, x, idx=0.2):
@@ -1079,7 +1079,7 @@ class DynamicMaskResidualBlock(MyModule):
         feature_dim = make_divisible(feature_dim, MyNetwork.CHANNEL_DIVISIBLE)
         return feature_dim
 
-    def compute_mask(self, idx, pruning_rate_list=[0.2,0.2,0.2]):
+    def compute_mask(self, idx, pruning_rate_list):
         self.conv1.compute_mask(idx, pruning_rate_list[0])
         self.conv2.compute_mask(idx, pruning_rate_list[1])  
         self.res.compute_mask(idx, pruning_rate_list[2])
