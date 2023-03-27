@@ -11,12 +11,12 @@ from ofa.utils.layers import MBConvLayer, ConvLayer, IdentityLayer, set_layer_fr
 from ofa.utils.layers import ResNetBottleneckBlock, LinearLayer, MultiHeadLinearLayer, ResNetResidualBlock
 from ofa.utils import MyModule, val2list, get_net_device, build_activation, make_divisible, SEModule, MyNetwork
 from .dynamic_op import DynamicMaskConv2d,DynamicSeparableConv2d, DynamicConv2d, DynamicBatchNorm2d, DynamicSE, DynamicGroupNorm
-from .dynamic_op import DynamicLinear,DynamicMaskLinear
+from .dynamic_op import DynamicLinear
 
 __all__ = [
     'adjust_bn_according_to_idx', 'copy_bn',
     'DynamicMBConvLayer', 'DynamicConvLayer', 'DynamicLinearLayer', 'DynamicResNetBottleneckBlock',
-    'DynamicMaskResidualBlock','DynamicMaskConvLayer','DynamicMaskLinearLayer',
+    'DynamicMaskResidualBlock','DynamicMaskConvLayer'
 ]
 
 
@@ -129,17 +129,11 @@ class DynamicMultiHeadLinearLayer(MyModule):
             )
             self.layers.append(layer)
 
-    def forward(self, x):
+    def forward(self, x, idx):
         if self.dropout is not None:
             x = self.dropout(x)
 
-        output_list = []
-        for layer in self.layers:
-            output = layer.forward(x)
-            output_list.append(output)
-
-        outputs = torch.cat(tuple(out[:,:-1] for out in output_list),1)
-        return outputs, output_list
+        return self.layers[idx].forward(x)
 
     @property
     def module_str(self):
@@ -419,7 +413,7 @@ class DynamicMBConvLayer(MyModule):
 
 class DynamicConvLayer(MyModule):
 
-    def __init__(self, ens, in_channel_list, out_channel_list, kernel_size=3, stride=1, dilation=1,
+    def __init__(self, in_channel_list, out_channel_list, kernel_size=3, stride=1, dilation=1,
                  use_bn=True, act_func='relu6'):
         super(DynamicConvLayer, self).__init__()
 
@@ -430,7 +424,6 @@ class DynamicConvLayer(MyModule):
         self.dilation = dilation
         self.use_bn = use_bn
         self.act_func = act_func
-        self.ens = ens
 
         self.conv = DynamicConv2d(
             max_in_channels=max(self.in_channel_list), max_out_channels=max(self.out_channel_list),
@@ -441,9 +434,6 @@ class DynamicConvLayer(MyModule):
         self.act = build_activation(self.act_func)
 
         self.active_out_channel = max(self.out_channel_list)
-
-        a,b,c,d = self.conv.shape
-        self.prune_mask = torch.ones(self.ens, a, b, c, d)
 
     def forward(self, x):
         self.conv.active_out_channel = self.active_out_channel
@@ -974,10 +964,16 @@ class DynamicMaskConvLayer(MyModule):
 
         self.active_out_channel = max(self.out_channel_list)
     
-    def compute_mask(self, idx, pruning_rate):
+    def compute_mask(self, idx,pruning_rate=0):
         self.conv.compute_mask(idx, pruning_rate)
+    
+    # def make_grad_for_weight(self):
+    #     self.conv.make_grad_for_weight()
+    
+    def update_branch(self):
+        self.conv.update_branch()
 
-    def forward(self, x, idx=0.2):
+    def forward(self, x, idx):
         self.conv.active_out_channel = self.active_out_channel
 
         x = self.conv(x,idx)
@@ -1013,7 +1009,6 @@ class DynamicMaskConvLayer(MyModule):
     @property
     def out_channels(self):
         return max(self.out_channel_list)
-
 
 class DynamicMaskResidualBlock(MyModule):
 
@@ -1106,28 +1101,3 @@ class DynamicMaskResidualBlock(MyModule):
         x = self.final_act(x)
         return x
 
-class DynamicMaskLinearLayer(MyModule):
-
-    def __init__(self, in_features_list, out_features, bias=True, dropout_rate=0,branches=2):
-        super(DynamicMaskLinearLayer, self).__init__()
-
-        self.in_features_list = in_features_list
-        self.out_features = out_features
-        self.bias = bias
-        self.dropout_rate = dropout_rate
-
-        if self.dropout_rate > 0:
-            self.dropout = nn.Dropout(self.dropout_rate, inplace=True)
-        else:
-            self.dropout = None
-        self.linear = DynamicMaskLinear(
-            max_in_features=max(self.in_features_list), max_out_features=self.out_features, bias=self.bias, branches=branches
-        )
-    
-    def compute_mask(self, idx, pruning_rate=0.5):
-        self.linear.compute_mask(idx, pruning_rate)
-
-    def forward(self, x, idx):
-        if self.dropout is not None:
-            x = self.dropout(x)
-        return self.linear(x, idx)

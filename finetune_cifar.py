@@ -21,7 +21,7 @@ import torchvision.datasets as datasets
 # import models.cifar as models
 # from models.cifar.resnet import ResNet18,ResNet20, ResNetEns
 from ofa.model_zoo import ofa_net
-from ofa.imagenet_classification.elastic_nn.networks import OFAResNets,OFAResNets18
+from ofa.imagenet_classification.elastic_nn.networks import OFAResNets,OFAResNets18,MaskEnsembleResNets18
 from ofa.utils.layers import MultiHeadLinearLayer
 from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig
 from utils.class_balanced_loss import CB_loss
@@ -32,7 +32,7 @@ parser.add_argument('-d', '--dataset', default='cifar10', type=str)
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 # Optimization options
-parser.add_argument('--epochs', default=300, type=int, metavar='N',
+parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -44,7 +44,7 @@ parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--drop', '--dropout', default=0, type=float,
                     metavar='Dropout', help='Dropout ratio')
-parser.add_argument('--schedule', type=int, nargs='+', default=[150, 225],
+parser.add_argument('--schedule', type=int, nargs='+', default=[30, 80],
                         help='Decrease learning rate at these epochs.')
 parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma on schedule.')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
@@ -56,20 +56,19 @@ parser.add_argument('-c', '--checkpoint', default='checkpoint/test', type=str, m
                     help='path to save checkpoint (default: checkpoint)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
-# Architecture
-parser.add_argument('--depth', type=int, default=29, help='Model depth.')
-parser.add_argument('--block-name', type=str, default='BasicBlock',
-                    help='the building block for Resnet and Preresnet: BasicBlock, Bottleneck (default: Basicblock for cifar10/cifar100)')
-parser.add_argument('--cardinality', type=int, default=8, help='Model cardinality (group).')
-parser.add_argument('--widen-factor', type=int, default=4, help='Widen factor. 4 -> 64, 8 -> 128, ...')
-parser.add_argument('--growthRate', type=int, default=12, help='Growth rate for DenseNet.')
-parser.add_argument('--compressionRate', type=int, default=2, help='Compression Rate (theta) for DenseNet.')
-parser.add_argument('--ens', type=int, default=1, help='number of experts model')
-parser.add_argument('--beta', type=float, default=0.9999)
-parser.add_argument('--gama', type=float, default=1.0)
+
+parser.add_argument('--beta', type=float, default=0.99)
+parser.add_argument('--gama', type=float, default=0)
+parser.add_argument('--mode', type=str, default='progressive_shrinkage', choices=['progressive_shrinkage','random','config'])
 parser.add_argument('--pretrained', type=str, default='exp/0210/ID41_ResV2_e[0.25~1.75]_w[2]_d[0]/checkpoint/model_best.pth.tar')
+
+# Architecture
+parser.add_argument('--branches', type=int, default=2, help='number of experts model')
 parser.add_argument('--branch_expand_list', type=str, default='1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0')
 parser.add_argument('--branch_depth_list', type=str, default='0,0,0,0,0')
+parser.add_argument('--pruning_ratio_list', type=str, default='0.1,0.25, 0.75,0.5')
+parser.add_argument('--ratio', type=float, default=0)
+
 # Miscs
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 #Device options
@@ -86,6 +85,8 @@ args.ks_list = '3' # not yet support
 args.expand_list = '0.125,0.25,0.375,0.5,0.625,0.75,0.875,1.0,1.25,1.5,1.75,2.0'
 args.width_mult_list = '2.0'
 args.depth_list = '0,1'
+args.config = [[0.1, [0.2, 0.7, 0.7], [0.7, 0.3, 0.4], [0.0, 0.2, 0.1], [0.2, 0.2, 0.7], [0.7, 0.0, 0.6], [0.0, 0.2, 0.6], [0.3, 0.6, 0.0], [0.3, 0.4, 0.4]], [0.8, [0.0, 0.8, 0.3], [0.2, 0.0, 0.6], [0.8, 0.7, 0.0], [0.4, 0.1, 0.2], [0.7, 0.1, 0.0], [0.7, 0.0, 0.4], [0.4, 0.2, 0.0], [0.5, 0.2, 0.4]]]
+
 
 # Validate dataset
 assert args.dataset == 'cifar10' or args.dataset == 'cifar100', 'Dataset can only be cifar10 or cifar100.'
@@ -101,8 +102,6 @@ random.seed(args.manualSeed)
 torch.manual_seed(args.manualSeed)
 if use_cuda:
     torch.cuda.manual_seed_all(args.manualSeed)
-
-best_acc = 0  # best test accuracy
 
 def load():
     with open('exp/searched_results/searched_configs3.txt', 'r', encoding='utf-8') as f:
@@ -157,59 +156,41 @@ def main():
     args.branch_expand_list = [float(e) for e in args.branch_expand_list.split(',')]
     args.branch_depth_list = [int(d) for d in args.branch_depth_list.split(',')]
     args.depth_list = [int(d) for d in args.depth_list.split(',')]
+    args.pruning_ratio_list = sorted(set([float(e) for e in args.pruning_ratio_list.split(',')]), reverse=False)
 
     args.width_mult_list = args.width_mult_list[0] if len(
         args.width_mult_list) == 1 else args.width_mult_list
 
-    if args.ens == 1:
+    if args.branches == 1:
         classes = 10
-    elif args.ens == 2:
+    elif args.branches == 2:
         classes = 6
-    elif args.ens == 10:
+    elif args.branches == 10:
         classes = 2
-    ofa_network = OFAResNets18(
+    ofa_network = MaskEnsembleResNets18(
         n_classes=classes, #run_config.data_provider.n_classes
         bn_param=(args.bn_momentum, args.bn_eps),
         dropout_rate=args.dropout,
-        depth_list=args.depth_list,
-        expand_ratio_list=args.expand_list,
-        width_mult_list=args.width_mult_list,
-        outputs=args.ens
+        depth_list=[0],
+        expand_ratio_list=[0.75, 1.0],
+        width_mult_list=[2.0],
+        branches=args.branches
     ).cuda()
+    # print(ofa_network)
 
     # load supernet pretrained weight
-    ckpt = torch.load(args.pretrained)['state_dict']
-    ofa_network.load_state_dict(ckpt)
-    print("Pretrained OFA-Resnet on cifar10 is loaded")
-    _ , test_acc = test(testloader, ofa_network, criterion, 1, True)
-    
-
-    # random sample a sub-network
-    # ofa_network.sample_active_subnet()
-    # model = ofa_network.get_active_subnet(preserve_weight=True)
-
-    # manually assign config of a sub-network
-    # net_config = {'e': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 'd': [0, 0, 0, 0, 0], 'w': [0, 0, 0, 0, 0, 0]}
-    # for i in range(len(net_config['e'])) :
-    #     net_config['e'][i] = args.branch_expand_list[i]
-    # for i in range(len(net_config['d'])) :
-    #     net_config['d'][i] = args.branch_depth_list[i]
-    # assert 'd' in net_config and 'e' in net_config
-    # ofa_network.set_active_subnet(d=net_config['d'], e=net_config['e'], w=net_config['w'])
-    # model = ofa_network.get_active_subnet(preserve_weight=True)
-
-    # build sub-ensemble model by Configlist
-    arch_list = load()
-    ensemble_model = ofa_network.get_active_ensembles(arch_list,preserve_weight=True)
-    model = ensemble_model.cuda()
-    _ , test_acc = test(testloader, model, criterion, 1, True)
+    # ckpt = torch.load(args.pretrained)['state_dict']
+    # ofa_network.load_state_dict(ckpt)
+    # print("Pretrained OFA-Resnet on cifar10 is loaded")
+    # _ , test_acc = test(testloader, ofa_network, criterion, 1, True)
+    # ofa_network.compute_mask(pruning_rate=args.ratio)
 
 
-    model = torch.nn.DataParallel(model).cuda()
+    model = torch.nn.DataParallel(ofa_network).cuda()
     cudnn.benchmark = True
     print('    Total params: %.2fM' % (sum(p.numel() for p in model.parameters())/1000000.0))
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/1), T_mult=1, eta_min=0, last_epoch=- 1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
 
     # Resume
     title = 'cifar-10-resnet' #+ args.arch
@@ -228,8 +209,32 @@ def main():
         logger = Logger(os.path.join(args.checkpoint, 'log.txt'), title=title)
         logger.set_names(['Learning Rate', 'Train Loss', 'Valid Loss', 'Train Acc.', 'Valid Acc.'])
 
+    if args.mode == 'progressive_shrinkage':
+        print('----- Now training the max network with global pruning rate=0 --------')
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion)
+        for r in args.pruning_ratio_list:
+            print('----- Now training the next step with pruning rate={} --------'.format(r))
+            model.module.compute_mask(pruning_rate=r)
+            train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion,r)
+        print('----- progressive_shrinkage training is Finished ------')
+
+    elif args.mode == 'random':
+        print('-----Now training the max network with global pruning rate=0--------')
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion)
+        print('----- Now training the next step with random pruning rate for every each layer --------')
+        # model.module.set_network_from_config(config=None)
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion, random=True)
+    
+    elif args.mode == "config":
+        print('-----Now training the customized network with given config --------')
+        test_loss, test_acc = test(testloader, model, criterion, use_cuda)
+        model.module.set_network_from_config(config=args.config)
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion)
+
+
+def train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion, r=None, random=False):
     # Train and val
-    # _ , _ = test(testloader, model, criterion, 1, use_cuda)
+    best_acc = 0  # best test accuracy
     for epoch in range(start_epoch, args.epochs):
         # adjust_learning_rate(optimizer, epoch)
         if epoch != start_epoch:
@@ -239,7 +244,12 @@ def main():
         print('\nEpoch: [%d | %d] LR: %f' % (epoch + 1, args.epochs, lr))
 
         train_loss, train_acc = train(trainloader, model, criterion, optimizer, epoch, use_cuda)
-        test_loss, test_acc = test(testloader, model, criterion, epoch, use_cuda)
+        test_loss, test_acc = test(testloader, model, criterion, use_cuda)
+        if r is not None:
+            model.module.compute_mask(pruning_rate=r)
+        if random:
+            model.module.set_network_from_config(config=None)
+            
 
         # append logger file
         logger.append([lr, train_loss, test_loss, train_acc, test_acc])
@@ -255,12 +265,13 @@ def main():
                 'optimizer' : optimizer.state_dict(),
             }, is_best, checkpoint=args.checkpoint)
 
-    logger.close()
-    logger.plot()
-    savefig(os.path.join(args.checkpoint, 'log.eps'))
+    # logger.close()
+    # logger.plot()
+    # savefig(os.path.join(args.checkpoint, 'log.eps'))
 
     print('Best acc:')
     print(best_acc)
+
 
 def train(trainloader, model, criterion, optimizer, epoch, use_cuda):
     # switch to train mode
@@ -286,12 +297,12 @@ def train(trainloader, model, criterion, optimizer, epoch, use_cuda):
         # compute output
         outputs = model(inputs)
         loss_sub = 0
-        if isinstance(outputs, tuple) and args.ens != 1:
+        if isinstance(outputs, tuple) and args.branches != 1:
             # from class_balanced_loss import CB_loss
             outputs, output_list = outputs
             for i,out in enumerate(output_list):
                 temp_target = targets.clone()
-                if args.ens == 2:
+                if args.branches == 2:
                     for temp in range(len(temp_target)):
                         if temp_target[temp]>=i*5 and temp_target[temp]<=i*5+4:
                             temp_target[temp] = temp_target[temp]-i*5
@@ -316,10 +327,11 @@ def train(trainloader, model, criterion, optimizer, epoch, use_cuda):
         top5.update(prec5.item(), inputs.size(0))
 
         # compute gradient and do SGD step
-        loss = loss+loss_sub/args.ens
+        loss = loss + loss_sub/args.branches
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        # import pdb; pdb.set_trace()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -343,7 +355,7 @@ def train(trainloader, model, criterion, optimizer, epoch, use_cuda):
 def test_sub(testloader, model, criterion, epoch, use_cuda):
 
     model.eval()
-    for i,m in enumerate(model.ens):
+    for i,m in enumerate(model.branches):
         batch_time = AverageMeter()
         data_time = AverageMeter()
         top1 = AverageMeter()
@@ -410,7 +422,7 @@ def test_sub(testloader, model, criterion, epoch, use_cuda):
         print(correct)
     return 
 
-def test(testloader, model, criterion, epoch, use_cuda):
+def test(testloader, model, criterion, use_cuda):
     global best_acc
 
     batch_time = AverageMeter()
@@ -430,7 +442,7 @@ def test(testloader, model, criterion, epoch, use_cuda):
 
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = torch.autograd.Variable(inputs, volatile=True), torch.autograd.Variable(targets)
+        inputs, targets = torch.autograd.Variable(inputs), torch.autograd.Variable(targets)
 
         # compute output
         outputs = model(inputs)
@@ -438,7 +450,6 @@ def test(testloader, model, criterion, epoch, use_cuda):
             outputs,_ = outputs
         loss = criterion(outputs, targets)
         loss.backward()
-
         # measure accuracy and record loss
         prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
         losses.update(loss.item(), inputs.size(0))

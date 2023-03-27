@@ -1,8 +1,9 @@
 import random
 import torch
 import torch.nn as nn
+import numpy as np
 
-from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicMaskLinearLayer,DynamicMaskResidualBlock, DynamicMaskConvLayer, DynamicConvLayer, DynamicLinearLayer,DynamicMultiHeadLinearLayer
+from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicMaskResidualBlock, DynamicMaskConvLayer, DynamicConvLayer, DynamicLinearLayer,DynamicMultiHeadLinearLayer
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import DynamicResNetBottleneckBlock,DynamicResNetResidualBlock
 from ofa.utils.layers import IdentityLayer, ResidualBlock
 from ofa.imagenet_classification.networks import ResNets, ResNetEns
@@ -606,7 +607,7 @@ class MaskEnsembleResNets18(ResNets):
 
 		# build input stem
 		input_stem = [
-			DynamicMaskConvLayer(val2list(3), input_channel, 3, stride=2, use_bn=True, act_func='relu',branches=self.branches),
+			DynamicMaskConvLayer(val2list(3), input_channel, 3, stride=2, use_bn=True, act_func='relu', branches=self.branches),
 		]
 
 		# blocks
@@ -622,13 +623,11 @@ class MaskEnsembleResNets18(ResNets):
 				blocks.append(residual_block)
 				input_channel = width
 		# classifier
-		classifier = DynamicMaskLinearLayer(input_channel, n_classes, self.branches,dropout_rate=dropout_rate,branches=branches)
+		classifier = DynamicMultiHeadLinearLayer(input_channel, n_classes, num_heads=branches)
 
 		super(MaskEnsembleResNets18, self).__init__(input_stem, blocks, classifier)
-
 		# set bn param
 		self.set_bn_param(*bn_param)
-
 		# runtime_depth
 		self.input_stem_skipping = 0
 		self.runtime_depth = [0] * len(n_block_list)
@@ -640,15 +639,37 @@ class MaskEnsembleResNets18(ResNets):
 	@staticmethod
 	def name():
 		return 'MaskEnsembleResNets18'
-
-	def compute_mask(self, pruning_rate=0.1):
+	
+	def compute_mask(self, pruning_rate):
 		for i in range(self.branches):
 			for layer in self.input_stem:
 				layer.compute_mask(i, pruning_rate)
 			for block in self.blocks:
 				block.compute_mask(i, [pruning_rate,pruning_rate,pruning_rate])
-			# self.classifier.compute_mask(i, pruning_rate)
+	
+	def generate_random_config_list(self, pruning_rate_list):
+		if pruning_rate_list == None:
+			pruning_rate_list= [round(x, 1) for x in np.arange(0, 0.9, 0.1)]
+		config_network = []
+		for i in range(self.branches):
+			config_branch = []
+			for _ in self.input_stem:
+				config_branch.append(random.choice(pruning_rate_list))
+			for _ in self.blocks:
+				config_branch.append([random.choice(pruning_rate_list) for _ in range(3)])
+			config_network.append(config_branch)
 
+		return config_network
+
+	def set_network_from_config(self, config):
+		if config == None:
+			config = self.generate_random_config_list(pruning_rate_list=None)
+		print('setting config as {}'.format(config))
+		for i in range(self.branches):
+			for layer in self.input_stem:
+				layer.compute_mask(i, config[i][0])
+			for b in range(1,len(self.blocks)):
+				self.blocks[b].compute_mask(i, config[i][b])
 
 	# @property
 	def grouped_block_index(self):
@@ -663,17 +684,13 @@ class MaskEnsembleResNets18(ResNets):
 			info_list.append(block_index_list)
 		return info_list
 
-	def forward(self, x, idx_list=[0,1]):
+	def forward(self, x):
+		# self.make_grad_for_weight()
+		info = self.grouped_block_index()
 		output_list = []
-		for idx in idx_list:
+		for idx in range(self.branches):
 			for layer in self.input_stem:
-				if self.input_stem_skipping > 0 \
-						and isinstance(layer, ResidualBlock) and isinstance(layer.shortcut, IdentityLayer):
-					pass
-				else:
-					out = layer(x, idx)
-			# import pdb; pdb.set_trace()
-			info = self.grouped_block_index()
+				out = layer(x, idx)
 			for stage_id, block_idx in enumerate(info):
 				depth_param = self.runtime_depth[stage_id]
 				active_idx = block_idx[:len(block_idx) - depth_param]

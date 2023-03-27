@@ -6,13 +6,15 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 from torch.nn.parameter import Parameter
+from torch.nn import init
 
 from ofa.utils import get_same_padding, sub_filter_start_end, make_divisible, SEModule, MyNetwork, MyConv2d
 
 __all__ = ['DynamicSeparableConv2d', 'DynamicConv2d', 'DynamicGroupConv2d',
            'DynamicBatchNorm2d', 'DynamicGroupNorm', 'DynamicSE', 'DynamicLinear',
-		   'DynamicMaskConv2d','DynamicMaskLinear'
+		   'DynamicMaskConv2d', 'DynamicMaskLinear'
 		   ]
+
 
 class DynamicSeparableConv2d(nn.Module):
 	KERNEL_TRANSFORM_MODE = 1  # None or 1
@@ -26,7 +28,8 @@ class DynamicSeparableConv2d(nn.Module):
 		self.dilation = dilation
 
 		self.conv = nn.Conv2d(
-			self.max_in_channels, self.max_in_channels, max(self.kernel_size_list), self.stride,
+			self.max_in_channels, self.max_in_channels, max(
+			    self.kernel_size_list), self.stride,
 			groups=self.max_in_channels, bias=False,
 		)
 
@@ -41,7 +44,8 @@ class DynamicSeparableConv2d(nn.Module):
 				ks_larger = self._ks_set[i + 1]
 				param_name = '%dto%d' % (ks_larger, ks_small)
 				# noinspection PyArgumentList
-				scale_params['%s_matrix' % param_name] = Parameter(torch.eye(ks_small ** 2))
+				scale_params['%s_matrix' % param_name] = Parameter(
+				    torch.eye(ks_small ** 2))
 			for name, param in scale_params.items():
 				self.register_parameter(name, param)
 
@@ -54,7 +58,8 @@ class DynamicSeparableConv2d(nn.Module):
 		start, end = sub_filter_start_end(max_kernel_size, kernel_size)
 		filters = self.conv.weight[:out_channel, :in_channel, start:end, start:end]
 		if self.KERNEL_TRANSFORM_MODE is not None and kernel_size < max_kernel_size:
-			start_filter = self.conv.weight[:out_channel, :in_channel, :, :]  # start with max kernel
+			start_filter = self.conv.weight[:out_channel,
+			    :in_channel, :, :]  # start with max kernel
 			for i in range(len(self._ks_set) - 1, 0, -1):
 				src_ks = self._ks_set[i]
 				if src_ks <= kernel_size:
@@ -63,13 +68,16 @@ class DynamicSeparableConv2d(nn.Module):
 				start, end = sub_filter_start_end(src_ks, target_ks)
 				_input_filter = start_filter[:, :, start:end, start:end]
 				_input_filter = _input_filter.contiguous()
-				_input_filter = _input_filter.view(_input_filter.size(0), _input_filter.size(1), -1)
+				_input_filter = _input_filter.view(
+				    _input_filter.size(0), _input_filter.size(1), -1)
 				_input_filter = _input_filter.view(-1, _input_filter.size(2))
 				_input_filter = F.linear(
 					_input_filter, self.__getattr__('%dto%d_matrix' % (src_ks, target_ks)),
 				)
-				_input_filter = _input_filter.view(filters.size(0), filters.size(1), target_ks ** 2)
-				_input_filter = _input_filter.view(filters.size(0), filters.size(1), target_ks, target_ks)
+				_input_filter = _input_filter.view(
+				    filters.size(0), filters.size(1), target_ks ** 2)
+				_input_filter = _input_filter.view(filters.size(
+				    0), filters.size(1), target_ks, target_ks)
 				start_filter = _input_filter
 			filters = start_filter
 		return filters
@@ -82,7 +90,8 @@ class DynamicSeparableConv2d(nn.Module):
 		filters = self.get_active_filter(in_channel, kernel_size).contiguous()
 
 		padding = get_same_padding(kernel_size)
-		filters = self.conv.weight_standardization(filters) if isinstance(self.conv, MyConv2d) else filters
+		filters = self.conv.weight_standardization(
+		    filters) if isinstance(self.conv, MyConv2d) else filters
 		y = F.conv2d(
 			x, filters, None, self.stride, padding, self.dilation, in_channel
 		)
@@ -116,7 +125,8 @@ class DynamicConv2d(nn.Module):
 		filters = self.get_active_filter(out_channel, in_channel).contiguous()
 
 		padding = get_same_padding(self.kernel_size)
-		filters = self.conv.weight_standardization(filters) if isinstance(self.conv, MyConv2d) else filters
+		filters = self.conv.weight_standardization(
+		    filters) if isinstance(self.conv, MyConv2d) else filters
 		y = F.conv2d(x, filters, None, self.stride, padding, self.dilation, 1)
 		return y
 
@@ -134,7 +144,8 @@ class DynamicGroupConv2d(nn.Module):
 		self.dilation = dilation
 
 		self.conv = nn.Conv2d(
-			self.in_channels, self.out_channels, max(self.kernel_size_list), self.stride,
+			self.in_channels, self.out_channels, max(
+			    self.kernel_size_list), self.stride,
 			groups=min(self.groups_list), bias=False,
 		)
 
@@ -165,7 +176,8 @@ class DynamicGroupConv2d(nn.Module):
 
 		filters = self.get_active_filter(kernel_size, groups).contiguous()
 		padding = get_same_padding(kernel_size)
-		filters = self.conv.weight_standardization(filters) if isinstance(self.conv, MyConv2d) else filters
+		filters = self.conv.weight_standardization(
+		    filters) if isinstance(self.conv, MyConv2d) else filters
 		y = F.conv2d(
 			x, filters, None, self.stride, padding, self.dilation, groups,
 		)
@@ -234,7 +246,8 @@ class DynamicSE(SEModule):
 		else:
 			assert in_channel % groups == 0
 			sub_in_channels = in_channel // groups
-			sub_filters = torch.chunk(self.fc.reduce.weight[:num_mid, :, :, :], groups, dim=1)
+			sub_filters = torch.chunk(
+			    self.fc.reduce.weight[:num_mid, :, :, :], groups, dim=1)
 			return torch.cat([
 				sub_filter[:, :sub_in_channels, :, :] for sub_filter in sub_filters
 			], dim=1)
@@ -248,7 +261,8 @@ class DynamicSE(SEModule):
 		else:
 			assert in_channel % groups == 0
 			sub_in_channels = in_channel // groups
-			sub_filters = torch.chunk(self.fc.expand.weight[:, :num_mid, :, :], groups, dim=0)
+			sub_filters = torch.chunk(
+			    self.fc.expand.weight[:, :num_mid, :, :], groups, dim=0)
 			return torch.cat([
 				sub_filter[:sub_in_channels, :, :, :] for sub_filter in sub_filters
 			], dim=0)
@@ -266,17 +280,20 @@ class DynamicSE(SEModule):
 
 	def forward(self, x, groups=None):
 		in_channel = x.size(1)
-		num_mid = make_divisible(in_channel // self.reduction, divisor=MyNetwork.CHANNEL_DIVISIBLE)
+		num_mid = make_divisible(in_channel // self.reduction,
+		                         divisor=MyNetwork.CHANNEL_DIVISIBLE)
 
 		y = x.mean(3, keepdim=True).mean(2, keepdim=True)
 		# reduce
-		reduce_filter = self.get_active_reduce_weight(num_mid, in_channel, groups=groups).contiguous()
+		reduce_filter = self.get_active_reduce_weight(
+		    num_mid, in_channel, groups=groups).contiguous()
 		reduce_bias = self.get_active_reduce_bias(num_mid)
 		y = F.conv2d(y, reduce_filter, reduce_bias, 1, 0, 1, 1)
 		# relu
 		y = self.fc.relu(y)
 		# expand
-		expand_filter = self.get_active_expand_weight(num_mid, in_channel, groups=groups).contiguous()
+		expand_filter = self.get_active_expand_weight(
+		    num_mid, in_channel, groups=groups).contiguous()
 		expand_bias = self.get_active_expand_bias(in_channel, groups=groups)
 		y = F.conv2d(y, expand_filter, expand_bias, 1, 0, 1, 1)
 		# hard sigmoid
@@ -294,7 +311,8 @@ class DynamicLinear(nn.Module):
 		self.max_out_features = max_out_features
 		self.bias = bias
 
-		self.linear = nn.Linear(self.max_in_features, self.max_out_features, self.bias)
+		self.linear = nn.Linear(self.max_in_features,
+		                        self.max_out_features, self.bias)
 
 		self.active_out_features = self.max_out_features
 
@@ -314,91 +332,80 @@ class DynamicLinear(nn.Module):
 		y = F.linear(x, weight, bias)
 		return y
 
+
 class DynamicMaskConv2d(nn.Module):
-	"""
-	Implementation of Masked channel selection；
-	TODO: 设计代替pruning_rate的机制
-	"""
-	def __init__(self, max_in_channels, max_out_channels, kernel_size=1, stride=1, dilation=1, branches=2):
-		super(DynamicMaskConv2d, self).__init__()
-
-		self.max_in_channels = max_in_channels
-		self.max_out_channels = max_out_channels
-		self.kernel_size = kernel_size
-		self.stride = stride
-		self.dilation = dilation
-
-		self.conv = nn.Conv2d(
+    def __init__(self, max_in_channels, max_out_channels, kernel_size=1, stride=1, dilation=1, branches=2):
+        super(DynamicMaskConv2d, self).__init__()
+        self.max_in_channels = max_in_channels
+        self.max_out_channels = max_out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation = dilation
+        self.branches = branches
+        
+        self.conv = nn.Conv2d(
 			self.max_in_channels, self.max_out_channels, self.kernel_size, stride=self.stride, bias=False,
 		)
-
-		self.active_out_channel = self.max_out_channels
-
-		if branches > 1:
-			self.mask = torch.ones([branches, self.max_out_channels, self.max_in_channels, kernel_size, kernel_size]).cuda()
-			self.weight = nn.Parameter(torch.stack([self.conv.weight.data for _ in range(branches)],0)).cuda()
-			self.weight.retain_grad()
-		else:
-			self.mask = torch.ones([self.max_out_channels,  self.max_in_channels, kernel_size, kernel_size]).cuda()
-	
-	def get_grad(self,idx):
-		self.grad = self.weight.grad[idx]
-		return self.grad
+        self.active_out_channel = self.max_out_channels
+        if branches > 1:
+            self.mask = torch.ones([branches, self.max_out_channels,
+			                       self.max_in_channels, kernel_size, kernel_size]).cuda()
+        else:
+            self.mask = torch.ones(
+			    [self.max_out_channels,  self.max_in_channels, kernel_size, kernel_size])
     
-	def compute_mask(self, idx, pruning_rate): # TODO 设计代替pruning_rate的机制
-		score = self.weight[idx] * self.weight.grad[idx]
-		score  = torch.sum(score, dim=tuple(range(1, len(score.shape))))
-		score, i = torch.sort(score)
-		num_pruning = int(score.numel() * pruning_rate)
-		self.mask[idx][i[:num_pruning]] = 0
-
-	def forward(self, x, idx=None):
-		if idx is not None:
-			weight = self.weight[idx] * self.mask[idx]
-		else:
-			weight = self.conv.weight * self.mask
-
-		padding = get_same_padding(self.kernel_size)
-		y = F.conv2d(x, weight, None, self.stride, padding, self.dilation, 1)
-
-		return y
+    def get_active_filter(self, idx):
+        return self.conv.weight * self.mask[idx]
+    
+    def compute_mask(self, idx, pruning_rate):  # TODO 设计代替pruning_rate的机制
+        score = self.conv.weight * self.conv.weight.grad[idx]
+        score = torch.sum(score, dim=tuple(range(1, len(score.shape))))
+        score, i = torch.sort(score)
+        num_pruning = int(score.numel() * pruning_rate)
+        self.mask[idx][i[:num_pruning]] = 0
+        
+    def forward(self, x, idx):
+        weight = self.get_active_filter(idx)
+        padding = get_same_padding(self.kernel_size)
+        y = F.conv2d(x, weight, None, self.stride, padding, self.dilation, 1)
+        
+        return y
 
 class DynamicMaskLinear(nn.Module):
-
+	""" 
+ 	Usage for intermediate linear layer; 
+ 	Don't use it for the output classifier
+	"""
 	def __init__(self, max_in_features, max_out_features, bias=True, branches=2):
 		super(DynamicMaskLinear, self).__init__()
 
 		self.max_in_features = max_in_features
 		self.max_out_features = max_out_features
 		self.bias = bias
+		self.branches = branches
 
 		self.linear = nn.Linear(self.max_in_features, self.max_out_features, self.bias)
-
 		self.active_out_features = self.max_out_features
+		self.mask = torch.ones([branches, self.max_out_features, self.max_in_features]).cuda()
 
-		if branches > 1:
-			self.mask = torch.ones([branches, self.max_out_features, self.max_in_features]).cuda()
-			self.weight = nn.Parameter(torch.stack([self.linear.weight.data for _ in range(branches)],0)).cuda()
-			self.weight.retain_grad()
-		else:
-			self.mask = torch.ones([self.max_out_features,  self.max_in_features]).cuda()
-
-	def get_grad(self,idx):
-		self.grad = self.weight_.grad[idx]
-		return self.grad
+	def get_active_filter(self, idx):
+		return self.linear.weight * self.mask[idx]
     
 	def compute_mask(self, idx, pruning_rate): # TODO 设计代替pruning_rate的机制
-		score = self.weight[idx] * self.weight.grad[idx]
+		score = self.linear.weight* self.linear.weight.grad[idx]
 		score  = torch.sum(score, dim=tuple(range(1, len(score.shape))))
 		score, i = torch.sort(score)
 		num_pruning = int(score.numel() * pruning_rate)
 		self.mask[idx][i[:num_pruning]] = 0
+	
+	def get_active_bias(self, out_features):
+		return self.linear.bias[:out_features] if self.bias else None
 
-	def forward(self, x, idx=None):
-		if idx is not None:
-			weight = self.weight[idx] * self.mask[idx]
-		else:
-			weight = self.linear.weight * self.mask
+	def forward(self, x, idx, out_features=None):
+		if out_features is None:
+			out_features = self.active_out_features
 
-		y = F.linear(x, weight)
+		weight = self.get_active_filter(idx)
+		bias = self.get_active_bias(out_features)
+		y = F.linear(x, weight, bias)
 		return y
