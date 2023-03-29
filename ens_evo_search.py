@@ -112,7 +112,6 @@ def main():
     args.ks_list = [int(ks) for ks in args.ks_list.split(",")]
     args.expand_list = [float(e) for e in args.expand_list.split(",")]
     args.depth_list = [int(d) for d in args.depth_list.split(",")]
-
     args.width_mult_list = (
         args.width_mult_list[0]
         if len(args.width_mult_list) == 1
@@ -139,9 +138,6 @@ def main():
     ofa_network.load_state_dict(ckpt)
     ofa_network = ofa_network.cuda()
     print("Pretrained OFA-Resnet on cifar10 is loaded")
-
-    # ofa_network = ofa_net('ofa_mbv3_d234_e346_k357_w1.2', pretrained=True).cuda()
-    # print('The OFA Network is ready.')
 
     # if cuda_available:
     #     # path to the dataset
@@ -214,11 +210,6 @@ def main():
     arch_list = [a[1] for a in best_info]
     save(arch_list, path="exp/searched_results/searched_configs3.txt")
 
-    ## get ensemble model
-    arch_list = load()
-    _, test_acc = test(
-        testloader, ofa_network, criterion, 1, True
-    )  # use loss.backward() to get grad for importance calculation
 
     ensemble_model = ofa_network.get_active_ensembles(arch_list, preserve_weight=True)
     ensemble_model = ensemble_model.cuda()

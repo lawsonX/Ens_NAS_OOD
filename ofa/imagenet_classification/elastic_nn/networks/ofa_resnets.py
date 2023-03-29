@@ -649,7 +649,7 @@ class MaskEnsembleResNets18(ResNets):
 	
 	def generate_random_config_list(self, pruning_rate_list):
 		if pruning_rate_list == None:
-			pruning_rate_list= [round(x, 1) for x in np.arange(0, 0.9, 0.1)]
+			pruning_rate_list= [round(x, 2) for x in np.arange(0, 0.6, 0.1)]
 		config_network = []
 		for i in range(self.branches):
 			config_branch = []
@@ -682,6 +682,7 @@ class MaskEnsembleResNets18(ResNets):
 			block_index_list.append(i)
 		if len(block_index_list) > 0:
 			info_list.append(block_index_list)
+   
 		return info_list
 
 	def forward(self, x):

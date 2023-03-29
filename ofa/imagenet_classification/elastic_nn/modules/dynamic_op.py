@@ -363,6 +363,16 @@ class DynamicMaskConv2d(nn.Module):
         score, i = torch.sort(score)
         num_pruning = int(score.numel() * pruning_rate)
         self.mask[idx][i[:num_pruning]] = 0
+    
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        state_dict = super().state_dict(destination, prefix, keep_vars)
+        state_dict[prefix + 'mask'] = self.mask.data
+        return state_dict
+
+    def load_state_dict(self, state_dict, prefix='', strict=True):
+        if prefix + 'mask' in state_dict:
+            self.mask.data = state_dict[prefix + 'mask']
+        super().load_state_dict(state_dict, strict)
         
     def forward(self, x, idx):
         weight = self.get_active_filter(idx)

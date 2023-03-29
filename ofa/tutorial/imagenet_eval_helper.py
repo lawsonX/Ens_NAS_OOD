@@ -13,13 +13,8 @@ from ofa.model_zoo import ofa_specialized
 from ofa.imagenet_classification.elastic_nn.utils import set_running_statistics
 
 
-def evaluate_ofa_subnet(ofa_net, path, net_config, data_loader, batch_size, device='cuda:0'):
-    # assert 'ks' in net_config and 'd' in net_config and 'e' in net_config
-    # assert len(net_config['ks']) == 10 and len(net_config['e']) == 10 and len(net_config['d']) == 4
-    ofa_net.set_active_subnet(ks=net_config['ks'], d=net_config['d'], e=net_config['e'])
-    subnet = ofa_net.get_active_subnet().to(device)
-    # calib_bn(subnet, path, net_config['r'][0], batch_size) # change for cifar10
-    top1 = validate(subnet, path, net_config['r'][0], data_loader, batch_size, device)
+def evaluate_ofa_subnet(subnet, data_loader, device='cuda:0'):
+    top1 = validate(subnet, data_loader, device)
     return top1
 
 
@@ -60,7 +55,7 @@ def calib_bn(net, path, image_size, batch_size, num_images=2000):
     set_running_statistics(net, data_loader)
 
 
-def validate(net, path, image_size, data_loader, batch_size=100, device='cuda:0'):
+def validate(net, data_loader, device='cuda:0'):
     if 'cuda' in device:
         net = torch.nn.DataParallel(net).to(device)
     else:
@@ -86,7 +81,6 @@ def validate(net, path, image_size, data_loader, batch_size=100, device='cuda:0'
     top5 = AverageMeter()
 
     with torch.no_grad():
-        # with tqdm(total=len(data_loader), desc='Validate') as t:
         for i, (images, labels) in enumerate(data_loader):
             images, labels = images.to(device), labels.to(device)
             # compute output
@@ -94,22 +88,12 @@ def validate(net, path, image_size, data_loader, batch_size=100, device='cuda:0'
 
             if isinstance(output, tuple):
                 output,_ = output
-
             # loss = criterion(output, labels)
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output, labels, topk=(1, 5))
-
             # losses.update(loss.item(), images.size(0))
             top1.update(acc1.item(), images.size(0))
             top5.update(acc5.item(), images.size(0))
-            # t.set_postfix({
-            #     # 'loss': losses.avg,
-            #     'top1': top1.avg,
-            #     'top5': top5.avg,
-            #     'img_size': images.size(2),
-            # })
-            # t.update(1)
-
     
     print('subnet val accuracy:\t top1=%.1f,\t top5=%.1f' % (top1.avg, top5.avg))
     return top1.avg

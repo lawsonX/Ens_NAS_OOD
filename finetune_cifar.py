@@ -57,16 +57,14 @@ parser.add_argument('-c', '--checkpoint', default='checkpoint/test', type=str, m
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 
-parser.add_argument('--beta', type=float, default=0.99)
-parser.add_argument('--gama', type=float, default=0)
+parser.add_argument('--beta', type=float, default=0.9999)
+parser.add_argument('--gama', type=float, default=0.1)
 parser.add_argument('--mode', type=str, default='progressive_shrinkage', choices=['progressive_shrinkage','random','config'])
-parser.add_argument('--pretrained', type=str, default='exp/0210/ID41_ResV2_e[0.25~1.75]_w[2]_d[0]/checkpoint/model_best.pth.tar')
+parser.add_argument('--pretrained', type=str, default='checkpoint/ps_train_[F010203]_lr1_e800/model_best.pth.tar')
 
 # Architecture
 parser.add_argument('--branches', type=int, default=2, help='number of experts model')
-parser.add_argument('--branch_expand_list', type=str, default='1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0')
-parser.add_argument('--branch_depth_list', type=str, default='0,0,0,0,0')
-parser.add_argument('--pruning_ratio_list', type=str, default='0.1,0.25, 0.75,0.5')
+parser.add_argument('--pruning_ratio_list', type=str, default='0.1,0.2')
 parser.add_argument('--ratio', type=float, default=0)
 
 # Miscs
@@ -81,11 +79,7 @@ state = {k: v for k, v in args._get_kwargs()}
 args.bn_momentum = 0.1
 args.bn_eps = 1e-5
 args.dropout = 0
-args.ks_list = '3' # not yet support
-args.expand_list = '0.125,0.25,0.375,0.5,0.625,0.75,0.875,1.0,1.25,1.5,1.75,2.0'
-args.width_mult_list = '2.0'
-args.depth_list = '0,1'
-args.config = [[0.1, [0.2, 0.7, 0.7], [0.7, 0.3, 0.4], [0.0, 0.2, 0.1], [0.2, 0.2, 0.7], [0.7, 0.0, 0.6], [0.0, 0.2, 0.6], [0.3, 0.6, 0.0], [0.3, 0.4, 0.4]], [0.8, [0.0, 0.8, 0.3], [0.2, 0.0, 0.6], [0.8, 0.7, 0.0], [0.4, 0.1, 0.2], [0.7, 0.1, 0.0], [0.7, 0.0, 0.4], [0.4, 0.2, 0.0], [0.5, 0.2, 0.4]]]
+args.config = [[0.1, [0.2, 0.1, 0.0], [0.1, 0.1, 0.0], [0.0, 0.2, 0.0], [0.2, 0.2, 0.0], [0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.1, 0.2, 0.0], [0.2, 0.1, 0.0]], [0.2, [0.0, 0.1, 0.0], [0.2, 0.0, 0.0], [0.2, 0.2, 0.0], [0.1, 0.1, 0.0], [0.0, 0.1, 0.0], [0.2, 0.1, 0.0], [0.1, 0.2, 0.0], [0.1, 0.2, 0.0]]]
 
 
 # Validate dataset
@@ -149,17 +143,7 @@ def main():
 
     # Model
     print("==> creating OFA-Resnet ensemble model ")
-    args.width_mult_list = [float(
-        width_mult) for width_mult in args.width_mult_list.split(',')]  # 类似slimmable network
-    args.ks_list = [int(ks) for ks in args.ks_list.split(',')]
-    args.expand_list = [float(e) for e in args.expand_list.split(',')]
-    args.branch_expand_list = [float(e) for e in args.branch_expand_list.split(',')]
-    args.branch_depth_list = [int(d) for d in args.branch_depth_list.split(',')]
-    args.depth_list = [int(d) for d in args.depth_list.split(',')]
     args.pruning_ratio_list = sorted(set([float(e) for e in args.pruning_ratio_list.split(',')]), reverse=False)
-
-    args.width_mult_list = args.width_mult_list[0] if len(
-        args.width_mult_list) == 1 else args.width_mult_list
 
     if args.branches == 1:
         classes = 10
@@ -172,21 +156,17 @@ def main():
         bn_param=(args.bn_momentum, args.bn_eps),
         dropout_rate=args.dropout,
         depth_list=[0],
-        expand_ratio_list=[0.75, 1.0],
+        expand_ratio_list=[1.0],
         width_mult_list=[2.0],
         branches=args.branches
     ).cuda()
-    # print(ofa_network)
+    print(ofa_network)
 
     # load supernet pretrained weight
-    # ckpt = torch.load(args.pretrained)['state_dict']
-    # ofa_network.load_state_dict(ckpt)
-    # print("Pretrained OFA-Resnet on cifar10 is loaded")
-    # _ , test_acc = test(testloader, ofa_network, criterion, 1, True)
-    # ofa_network.compute_mask(pruning_rate=args.ratio)
-
-
+    ckpt = torch.load(args.pretrained)['state_dict']
     model = torch.nn.DataParallel(ofa_network).cuda()
+    model.load_state_dict(ckpt)
+    print("Pretrained OFA-Resnet on cifar10 is loaded")
     cudnn.benchmark = True
     print('    Total params: %.2fM' % (sum(p.numel() for p in model.parameters())/1000000.0))
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
@@ -211,30 +191,30 @@ def main():
 
     if args.mode == 'progressive_shrinkage':
         print('----- Now training the max network with global pruning rate=0 --------')
-        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion)
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion,stage='train_max')
         for r in args.pruning_ratio_list:
             print('----- Now training the next step with pruning rate={} --------'.format(r))
             model.module.compute_mask(pruning_rate=r)
-            train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion,r)
+            train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion,stage='train_ps{}'.format(r))
         print('----- progressive_shrinkage training is Finished ------')
 
     elif args.mode == 'random':
         print('-----Now training the max network with global pruning rate=0--------')
-        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion)
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion,stage='train_max')
         print('----- Now training the next step with random pruning rate for every each layer --------')
-        # model.module.set_network_from_config(config=None)
-        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion, random=True)
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion, random=True,stage='train_random')
     
     elif args.mode == "config":
         print('-----Now training the customized network with given config --------')
         test_loss, test_acc = test(testloader, model, criterion, use_cuda)
         model.module.set_network_from_config(config=args.config)
-        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion)
+        train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion,stage='train_config')
 
 
-def train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion, r=None, random=False):
+def train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainloader, testloader, criterion, random=False, stage='train_max'):
     # Train and val
     best_acc = 0  # best test accuracy
+    test_acc = 0
     for epoch in range(start_epoch, args.epochs):
         # adjust_learning_rate(optimizer, epoch)
         if epoch != start_epoch:
@@ -245,11 +225,8 @@ def train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainlo
 
         train_loss, train_acc = train(trainloader, model, criterion, optimizer, epoch, use_cuda)
         test_loss, test_acc = test(testloader, model, criterion, use_cuda)
-        if r is not None:
-            model.module.compute_mask(pruning_rate=r)
         if random:
             model.module.set_network_from_config(config=None)
-            
 
         # append logger file
         logger.append([lr, train_loss, test_loss, train_acc, test_acc])
@@ -257,13 +234,14 @@ def train_epochs(args, logger, model, start_epoch, scheduler, optimizer, trainlo
         # save model
         is_best = test_acc > best_acc
         best_acc = max(test_acc, best_acc)
+        save_name = os.path.join(args.checkpoint,stage)
         save_checkpoint({
                 'epoch': epoch + 1,
                 'state_dict': model.state_dict(),
                 'acc': test_acc,
                 'best_acc': best_acc,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best, checkpoint=args.checkpoint)
+            }, is_best, checkpoint=save_name)
 
     # logger.close()
     # logger.plot()
@@ -331,7 +309,6 @@ def train(trainloader, model, criterion, optimizer, epoch, use_cuda):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        # import pdb; pdb.set_trace()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -475,6 +452,8 @@ def test(testloader, model, criterion, use_cuda):
     return (losses.avg, top1.avg)
 
 def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoint.pth.tar'):
+    if not os.path.isdir(checkpoint):
+        mkdir_p(checkpoint)
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
     if is_best:
@@ -488,4 +467,18 @@ def adjust_learning_rate(optimizer, epoch):
             param_group['lr'] = state['lr']
 
 if __name__ == '__main__':
+    """
+    beta 是一个可调节的参数，用于平衡正负样本之间的权重，通常情况下，
+    我们可以根据数据集中正负样本的比例来设置 beta 的值。
+    例如，如果数据集中负样本比例较高，
+    我们可以将 beta 设置为一个较小的值，
+    以增加对正样本的关注。
+
+    gamma 是一个可调节的指数参数，
+    用于调节易分类样本和难分类样本之间的权重差异。
+    当 gamma 设为 0 时,Focal Loss 退化为标准的交叉熵损失。
+    一般情况下，我们可以根据数据集中难易分类样本的分布情况来设置 gamma 的值。
+    例如，如果数据集中存在一些非常难以分类的样本，
+    我们可以将 gamma 设置为一个较大的值，以加强对这些样本的关注。
+    """
     main()
